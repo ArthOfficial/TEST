@@ -1,2 +1,14 @@
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 powershell.exe -ExecutionPolicy Bypass -NoProfile -File "C:\Users\Arth\Downloads\monitor_bot.ps1"
+
+# --------------------------
+# Logging setup
+# --------------------------
+$LOG_FILE = "$env:TEMP\monitor_bot.log"
+
+function Log($message, $level="INFO") {
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $entry = "$timestamp - $level - $message"
+    Add-Content -Path $LOG_FILE -Value $entry
+}
+
