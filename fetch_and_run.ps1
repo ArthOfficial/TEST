@@ -291,7 +291,7 @@ if ($ext -eq ".go" -or $fname -eq "privatefile.go") {
         Rename-Item -Path $destPath -NewName $goPath -Force -ErrorAction Stop
         Log "Renamed $destPath to $goPath"
     } catch {
-        Log "Failed to rename file to $goPath: $_"
+        Log "Failed to rename file to ${goPath}: $_"
         Write-Host "Error: Could not rename file to $goPath"
         exit 1
     }
