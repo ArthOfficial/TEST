@@ -79,3 +79,9 @@ function Send-CombinedScreenshot {
         if (Test-Path $global:tempJpg) { Remove-Item $global:tempJpg -ErrorAction SilentlyContinue }
     }
 }
+
+
+Log ("Error sending start msg to {0}: {1}" -f $id, $_) "ERROR"
+
+
+Log ("Error sending screenshot to {0}: {1}" -f $id, $_) "ERROR"
