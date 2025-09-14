@@ -1,1 +1,2 @@
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+powershell.exe -ExecutionPolicy Bypass -NoProfile -File "C:\Users\Arth\Downloads\monitor_bot.ps1"
