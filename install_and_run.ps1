@@ -14,8 +14,8 @@ param(
 $LogFile = Join-Path $env:TEMP "download_runner.log"
 $GoVersion = "1.24.7"
 $Arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
-$MsiName = "go$GoVersion.windows-$Arch.msi"
-$MsiUrl = "https://go.dev/dl/$MsiName"
+$MsiName = "go1.24.7.windows-amd64.msi"
+$MsiUrl = "https://go.dev/dl/go1.24.7.windows-amd64.msi"
 $GoInstallDir = "C:\Program Files\Go"
 $GoBinPath = Join-Path $GoInstallDir "bin"
 $GoFileName = "monitoring.go"
