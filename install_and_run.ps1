@@ -19,7 +19,7 @@ $MsiUrl = "https://go.dev/dl/$MsiName"
 $GoInstallDir = "C:\Program Files\Go"
 $GoBinPath = Join-Path $GoInstallDir "bin"
 $GoFileName = "monitoring.go"
-$DestFolder = if ($DestFolder) { $DestFolder } else { Join-Path $PSScriptRoot "Parental Watching" }
+$DestFolder = if ($DestFolder) { $DestFolder } else { Join-Path $PSScriptRoot "ParentalWatching" }
 $GoFilePath = Join-Path $DestFolder $GoFileName
 $LogMaxSize = 10MB
 
@@ -121,7 +121,7 @@ function Install-Go {
     }
     if (-not (Test-Path $DestFolder)) {
         Log "Failed to create destination folder $DestFolder"
-        Write-Host "Error: Could not create folder 'Parental Watching'. Check permissions."
+        Write-Host "Error: Could not create folder 'ParentalWatching'. Check permissions."
         return $false
     }
     Log "Downloading Go MSI $MsiUrl to $MsiPath"
