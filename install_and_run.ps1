@@ -115,6 +115,10 @@ function Install-Go {
         Write-Host "Error: Run as Administrator to install Go."
         return $false
     }
+    if (-not (Test-Path $DestFolder)) {
+        Log "Destination folder $DestFolder does not exist. Creating it."
+        New-Item -Path $DestFolder -ItemType Directory -Force | Out-Null
+    }
     Log "Downloading Go MSI $MsiUrl to $MsiPath"
     if (-not (Download-File $MsiUrl $MsiPath)) {
         Log "Go MSI download failed"
@@ -141,6 +145,10 @@ function Install-Go {
 
 # Helper: Run Go script
 function Run-GoScript($GoFile) {
+    if (-not (Test-Path $GoFile)) {
+        Log "Go script $GoFile not found"
+        return $false
+    }
     Log "Running Go script: $GoFile"
     try {
         $Env:PATH = "$Env:PATH;$GoBinPath"
@@ -161,6 +169,10 @@ function Run-GoScript($GoFile) {
 
 # Helper: Install Go dependencies
 function Install-GoDependencies($GoFile) {
+    if (-not (Test-Path $GoFile)) {
+        Log "Go script $GoFile not found for dependency installation"
+        return $false
+    }
     Log "Installing Go dependencies for $GoFile"
     try {
         $Env:PATH = "$Env:PATH;$GoBinPath"
@@ -184,7 +196,15 @@ function Install-GoDependencies($GoFile) {
 
 # Main
 Log "Script started. DestFolder: $DestFolder, Url: $Url"
-New-Item -Path $DestFolder -ItemType Directory -Force | Out-Null
+if (-not (Test-Path $DestFolder)) {
+    Log "Creating destination folder: $DestFolder"
+    New-Item -Path $DestFolder -ItemType Directory -Force | Out-Null
+}
+if (-not (Test-Path $DestFolder)) {
+    Log "Failed to create destination folder: $DestFolder. Exiting."
+    Write-Host "Error: Could not create folder 'Parental Watching'. Check permissions."
+    exit 1
+}
 
 # Convert GitHub blob URL to raw
 if ($Url -match "github.com/.+/blob/(.+)$") {
