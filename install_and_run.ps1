@@ -157,17 +157,35 @@ function Run-GoScript($GoFile) {
     Log "Running Go script: $GoFile"
     try {
         $Env:PATH = "$Env:PATH;$GoBinPath"
-        if ($RunHidden) {
-            $Proc = Start-Process -FilePath "go" -ArgumentList "run", $GoFile -WorkingDirectory $DestFolder -WindowStyle Hidden -PassThru -ErrorAction Stop
-        } else {
-            $Proc = Start-Process -FilePath "go" -ArgumentList "run", $GoFile -WorkingDirectory $DestFolder -NoNewWindow -PassThru -ErrorAction Stop
+        $startArgs = @{
+            FilePath = "go"
+            ArgumentList = "run", $GoFile
+            WorkingDirectory = $DestFolder
+            PassThru = $true
+            ErrorAction = "Stop"
         }
-        Start-Sleep -Seconds 5
-        $Response = Invoke-WebRequest -Uri "http://localhost:5000/stream" -Method Get -TimeoutSec 10 -ErrorAction SilentlyContinue
-        if ($Response.StatusCode -eq 200) {
-            Log "MJPEG server started successfully on localhost:5000"
-        } else {
-            Log "MJPEG server failed to start. Check if port 5000 is in use or review %USERPROFILE%\monitor_bot.log."
+        if ($RunHidden) {
+            $startArgs['WindowStyle'] = "Hidden"
+        } # No else needed; default is new window
+        $Proc = Start-Process @startArgs
+        $maxAttempts = 5
+        $attempt = 0
+        $serverStarted = $false
+        while ($attempt -lt $maxAttempts -and -not $serverStarted) {
+            Start-Sleep -Seconds 2
+            try {
+                $Response = Invoke-WebRequest -Uri "http://localhost:5000/stream" -Method Get -TimeoutSec 5 -ErrorAction Stop
+                if ($Response.StatusCode -eq 200) {
+                    Log "MJPEG server started successfully on localhost:5000"
+                    $serverStarted = $true
+                }
+            } catch {
+                Log "Attempt $($attempt + 1): MJPEG server not yet started: $_"
+            }
+            $attempt++
+        }
+        if (-not $serverStarted) {
+            Log "MJPEG server failed to start after $maxAttempts attempts. Check %USERPROFILE%\monitor_bot.log for errors."
             return $false
         }
         return $true
@@ -263,3 +281,5 @@ if (-not (Run-GoScript $GoFilePath)) {
 }
 
 Log "Script completed successfully."
+Write-Host "The monitoring.go is now running. Access http://localhost:5000/stream in your browser for the live preview."
+Write-Host "Check %USERPROFILE%\monitor_bot.log for logs."
