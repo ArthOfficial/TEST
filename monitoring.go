@@ -11,7 +11,7 @@ import (
     "os"
     "os/exec"
     "path/filepath"
-    "strings"
+    "strconv"
     "sync"
     "time"
 
@@ -26,11 +26,12 @@ var (
     logFile     = ""
     mutex       sync.Mutex
     running     = true
+    destFolder  = filepath.Join(os.Getenv("USERPROFILE"), "Downloads", "ParentalWatching")
 )
 
 func init() {
-    usr, _ := os.UserHomeDir()
-    logFile = filepath.Join(usr, "monitor_bot.log")
+    // Set log file to %TEMP%\monitor_bot.log
+    logFile = filepath.Join(os.Getenv("TEMP"), "monitor_bot.log")
     f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
     if err != nil {
         fmt.Println("Failed to open log file:", err)
@@ -126,7 +127,11 @@ func startMJPEGServer() {
         if checkPort(port) {
             break
         }
-        p, _ := strconv.Atoi(port)
+        p, err := strconv.Atoi(port)
+        if err != nil {
+            log.Println("ERROR - Failed to parse port:", err)
+            return
+        }
         p += 100
         port = strconv.Itoa(p)
         log.Println("INFO - Port", port, "in use, trying", p)
@@ -199,8 +204,9 @@ func uninstall() {
     }
 
     // Remove Go
-    if Test-Path $GoInstallDir {
-        cmd = exec.Command("msiexec.exe", "/x", "{*}", "/qn") // Replace with actual product code if known
+    goInstallDir := "C:\\Program Files\\Go"
+    if _, err := os.Stat(goInstallDir); err == nil {
+        cmd := exec.Command("msiexec.exe", "/x", "{*}", "/qn") // Replace with actual product code if known
         if err := cmd.Run(); err != nil {
             log.Println("ERROR - Failed to uninstall Go:", err)
         }
@@ -208,34 +214,35 @@ func uninstall() {
 
     // Remove scripts and folders
     files := []string{
-        filepath.Join($DestFolder, $GoFileName),
-        filepath.Join($DestFolder, "monitoring.exe"),
-        filepath.Join($DestFolder, "go.mod"),
-        filepath.Join($DestFolder, "go.sum"),
-        filepath.Join($PSScriptRoot, "install_and_run.ps1"),
+        filepath.Join(destFolder, "monitoring.go"),
+        filepath.Join(destFolder, "monitoring.exe"),
+        filepath.Join(destFolder, "go.mod"),
+        filepath.Join(destFolder, "go.sum"),
+        filepath.Join(destFolder, "install_and_run.ps1"),
     }
     for _, file := range files {
         if err := os.Remove(file); err != nil {
             log.Println("ERROR - Failed to delete", file, ":", err)
         }
     }
-    if err := os.RemoveAll($DestFolder); err != nil {
-        log.Println("ERROR - Failed to delete folder", $DestFolder, ":", err)
+    if err := os.RemoveAll(destFolder); err != nil {
+        log.Println("ERROR - Failed to delete folder", destFolder, ":", err)
     }
 
     // Remove environment variables
-    if Test-IsAdmin {
-        currentPath := [Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::Machine)
-        newPath := strings.ReplaceAll(currentPath, ";$GoBinPath", "")
-        [Environment]::SetEnvironmentVariable("Path", newPath, [System.EnvironmentVariableTarget]::Machine)
-        [Environment]::SetEnvironmentVariable("GOROOT", "", [System.EnvironmentVariableTarget]::Machine)
-        log.Println("INFO - Removed PATH and GOROOT")
+    cmd = exec.Command("powershell", "-Command", "[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', [System.EnvironmentVariableTarget]::Machine).Replace(';C:\\Program Files\\Go\\bin', ''), [System.EnvironmentVariableTarget]::Machine)")
+    if err := cmd.Run(); err != nil {
+        log.Println("ERROR - Failed to remove PATH:", err)
+    }
+    cmd = exec.Command("powershell", "-Command", "[Environment]::SetEnvironmentVariable('GOROOT', '', [System.EnvironmentVariableTarget]::Machine)")
+    if err := cmd.Run(); err != nil {
+        log.Println("ERROR - Failed to remove GOROOT:", err)
     }
 
     // Remove Defender exclusion
-    if Test-IsAdmin {
-        Remove-MpPreference -ExclusionPath $DestFolder
-        log.Println("INFO - Removed Defender exclusion")
+    cmd = exec.Command("powershell", "-Command", "Remove-MpPreference -ExclusionPath '" + destFolder + "'")
+    if err := cmd.Run(); err != nil {
+        log.Println("ERROR - Failed to remove Defender exclusion:", err)
     }
 
     log.Println("INFO - Uninstallation complete")
