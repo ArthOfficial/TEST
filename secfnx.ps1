@@ -56,16 +56,26 @@ function Test-IsAdmin {
 function Download-File($SourceUrl, $OutPath) {
     Log "Downloading $SourceUrl -> $OutPath"
     try {
-        $ProgressPreference = 'Continue'
-        Invoke-WebRequest -Uri $SourceUrl -OutFile $OutPath -ErrorAction Stop
+        $ProgressPreference = 'SilentlyContinue'  # hides the bytes written output
+        Invoke-WebRequest -Uri $SourceUrl -OutFile $OutPath -UseBasicParsing -ErrorAction Stop
         Log-Path $OutPath "File Downloaded"
-        Status-Output "Downloaded $OutPath" $true
-        return $true
+
+        # Verify file downloaded
+        if (Test-Path $OutPath) {
+            $FileSize = (Get-Item $OutPath).Length
+            Status-Output "Fully Go Language File Downloaded from link ($FileSize bytes)" $true
+            return $true
+        } else {
+            Status-Output "Download failed (file not found)" $false
+            return $false
+        }
     } catch {
         Log "Download failed: $_"
         Status-Output "Downloaded $OutPath" $false
         return $false
-    } finally { $ProgressPreference = 'SilentlyContinue' }
+    } finally {
+        $ProgressPreference = 'Continue'
+    }
 }
 
 function Add-ToSystemPath($Path) {
