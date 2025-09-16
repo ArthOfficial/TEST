@@ -143,7 +143,6 @@ function Install-GoDependencies($GoFile) {
     }
 }
 
-
 function Run-GoScript($GoFile) {
     if (-not (Test-Path $GoFile)) { 
         Status-Output "Run Go Script" $false
