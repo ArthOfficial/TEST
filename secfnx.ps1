@@ -113,16 +113,36 @@ function Install-Go {
 
 function Install-GoDependencies($GoFile) {
     if (-not (Test-Path $GoFile)) { Status-Output "Install Dependencies" $false; return $false }
+
     $Env:PATH = "$Env:PATH;$GoBinPath"
     $GoMod = Join-Path $DestFolder "go.mod"
     $GoSum = Join-Path $DestFolder "go.sum"
+
     if (Test-Path $GoMod) { Remove-Item $GoMod -Force -ErrorAction SilentlyContinue; Log-Path $GoMod "File Deleted" }
     if (Test-Path $GoSum) { Remove-Item $GoSum -Force -ErrorAction SilentlyContinue; Log-Path $GoSum "File Deleted" }
-    Start-Process -FilePath "go" -ArgumentList "mod", "init", "monitoring" -WorkingDirectory $DestFolder -Wait -NoNewWindow
-    Status-Output "Initialize Go Module" $true
-    Start-Process -FilePath "go" -ArgumentList "get", "-v", "github.com/kbinani/screenshot", "github.com/go-telegram-bot-api/telegram-bot-api/v5" -WorkingDirectory $DestFolder -Wait -NoNewWindow
-    Status-Output "Install Dependencies" $true
+
+    Push-Location $DestFolder
+
+    try {
+        Write-Host "[INFO] Initializing Go module..."
+        & go mod init monitoring
+        if ($LASTEXITCODE -ne 0) { throw "Go mod init failed" }
+
+        Write-Host "[INFO] Installing dependencies..."
+        & go get -v github.com/kbinani/screenshot github.com/go-telegram-bot-api/telegram-bot-api/v5
+        if ($LASTEXITCODE -ne 0) { throw "Go get dependencies failed" }
+
+        Status-Output "Install Dependencies" $true
+        Pop-Location
+        return $true
+    } catch {
+        Log "Dependency install error: $_"
+        Status-Output "Install Dependencies" $false
+        Pop-Location
+        return $false
+    }
 }
+
 
 function Run-GoScript($GoFile) {
     if (-not (Test-Path $GoFile)) { 
