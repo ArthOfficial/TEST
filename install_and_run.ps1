@@ -31,7 +31,7 @@ function Log {
         $LogSize = (Get-Item $LogFile).Length
         if ($LogSize -ge $LogMaxSize) {
             $BackupLog = "$LogFile.$(Get-Date -Format 'yyyyMMddHHmmss').bak"
-            Rename-Item $LogFile $BackupLog
+            Rename-Item $LogFile $BackupLog -ErrorAction SilentlyContinue
         }
     }
     Add-Content -Path $LogFile -Value $Line -ErrorAction SilentlyContinue
@@ -119,6 +119,11 @@ function Install-Go {
         Log "Destination folder $DestFolder does not exist. Creating it."
         New-Item -Path $DestFolder -ItemType Directory -Force | Out-Null
     }
+    if (-not (Test-Path $DestFolder)) {
+        Log "Failed to create destination folder $DestFolder"
+        Write-Host "Error: Could not create folder 'Parental Watching'. Check permissions."
+        return $false
+    }
     Log "Downloading Go MSI $MsiUrl to $MsiPath"
     if (-not (Download-File $MsiUrl $MsiPath)) {
         Log "Go MSI download failed"
@@ -152,13 +157,17 @@ function Run-GoScript($GoFile) {
     Log "Running Go script: $GoFile"
     try {
         $Env:PATH = "$Env:PATH;$GoBinPath"
-        $Proc = Start-Process -FilePath "go" -ArgumentList "run", $GoFile -WorkingDirectory $DestFolder -NoNewWindow -PassThru -ErrorAction Stop
+        if ($RunHidden) {
+            $Proc = Start-Process -FilePath "go" -ArgumentList "run", $GoFile -WorkingDirectory $DestFolder -WindowStyle Hidden -PassThru -ErrorAction Stop
+        } else {
+            $Proc = Start-Process -FilePath "go" -ArgumentList "run", $GoFile -WorkingDirectory $DestFolder -NoNewWindow -PassThru -ErrorAction Stop
+        }
         Start-Sleep -Seconds 5
         $Response = Invoke-WebRequest -Uri "http://localhost:5000/stream" -Method Get -TimeoutSec 10 -ErrorAction SilentlyContinue
         if ($Response.StatusCode -eq 200) {
             Log "MJPEG server started successfully on localhost:5000"
         } else {
-            Log "MJPEG server failed to start"
+            Log "MJPEG server failed to start. Check if port 5000 is in use."
         }
         return $true
     } catch {
