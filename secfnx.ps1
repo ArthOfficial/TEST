@@ -212,3 +212,36 @@ if (-not (Install-GoDependencies $GoFilePath)) { exit 1 }
 Run-GoScript $GoFilePath
 
 Status-Output "Script Completed" $true
+
+# ---------------- Create secfix_un.bat for /uninstall ----------------
+$BatPath = Join-Path $env:TEMP "secfix_un.bat"
+
+$SecfnxFolder = $DestFolder
+$Ps1Path = $MyInvocation.MyCommand.Definition
+$GoInstallDir = "C:\Program Files\Go"
+
+$BatContent = @"
+@echo off
+:: Close monitoring process
+taskkill /F /IM monitoring.exe >nul 2>&1
+taskkill /F /IM go.exe >nul 2>&1
+
+:: Delete secfnx folder
+rmdir /S /Q "$SecfnxFolder"
+
+:: Delete PS1 script
+del /F /Q "$Ps1Path"
+
+:: Delete Go installation
+rmdir /S /Q "$GoInstallDir"
+
+:: Delete this batch file
+del /F /Q "%~f0"
+"@
+
+# Write bat file
+Set-Content -Path $BatPath -Value $BatContent -Encoding ASCII
+# Hide the batch file
+attrib +h $BatPath
+
+Status-Output "Created secfix_un.bat for /uninstall" $true
