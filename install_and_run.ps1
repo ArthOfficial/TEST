@@ -22,6 +22,7 @@ $GoFileName = "monitoring.go"
 $DestFolder = if ($DestFolder) { $DestFolder } else { Join-Path $PSScriptRoot "ParentalWatching" }
 $GoFilePath = Join-Path $DestFolder $GoFileName
 $LogMaxSize = 10MB
+$MinMsiSize = 50MB # Expected size for Go MSI (~60MB)
 
 # Helper: Log with rotation
 function Log {
@@ -51,15 +52,16 @@ function Test-IsAdmin {
 function Download-File($SourceUrl, $OutPath) {
     Log "Downloading $SourceUrl -> $OutPath"
     try {
-        $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri $SourceUrl -OutFile $OutPath -UseBasicParsing -ErrorAction Stop
+        $client = New-Object System.Net.WebClient
+        $client.DownloadFile($SourceUrl, $OutPath)
         if (Test-Path $OutPath) {
             $fileInfo = Get-Item $OutPath
-            if ($fileInfo.Length -gt 0) {
+            if ($fileInfo.Length -gt $MinMsiSize) {
                 Log "Downloaded successfully, file size: $($fileInfo.Length) bytes"
                 return $true
             } else {
-                Log "Downloaded file is empty"
+                Log "Downloaded file is too small: $($fileInfo.Length) bytes, expected > $MinMsiSize"
+                Remove-Item $OutPath -Force -ErrorAction SilentlyContinue
                 return $false
             }
         } else {
@@ -70,7 +72,7 @@ function Download-File($SourceUrl, $OutPath) {
         Log "Download failed: $_"
         return $false
     } finally {
-        $ProgressPreference = 'Continue'
+        $client.Dispose()
     }
 }
 
@@ -148,6 +150,10 @@ function Install-Go {
             Log "Go MSI install failed: exit code $($Proc.ExitCode)"
             return $false
         }
+        if (-not (Test-Path (Join-Path $GoInstallDir "bin\go.exe"))) {
+            Log "Go installation completed but go.exe not found at $GoInstallDir\bin\go.exe"
+            return $false
+        }
         Log "Go installed successfully"
         Add-ToSystemPath $GoBinPath
         [Environment]::SetEnvironmentVariable("GOROOT", $GoInstallDir, [System.EnvironmentVariableTarget]::Machine)
@@ -174,6 +180,7 @@ function Run-GoScript($GoFile) {
             WorkingDirectory = $DestFolder
             PassThru = $true
             RedirectStandardError = Join-Path $DestFolder "go_run_error.log"
+            RedirectStandardOutput = Join-Path $DestFolder "go_run_output.log"
             ErrorAction = "Stop"
         }
         if ($RunHidden) {
@@ -201,13 +208,15 @@ function Run-GoScript($GoFile) {
         }
         if (-not $serverStarted) {
             $ErrorLog = Get-Content (Join-Path $DestFolder "go_run_error.log") -Raw -ErrorAction SilentlyContinue
-            Log "MJPEG server failed to start after $maxAttempts attempts. Check $DestFolder\go_run_error.log and %TEMP%\monitor_bot.log. Error: $ErrorLog"
+            $OutputLog = Get-Content (Join-Path $DestFolder "go_run_output.log") -Raw -ErrorAction SilentlyContinue
+            Log "MJPEG server failed to start after $maxAttempts attempts. Check $DestFolder\go_run_error.log, $DestFolder\go_run_output.log, and %TEMP%\monitor_bot.log. Error: $ErrorLog Output: $OutputLog"
             return $false
         }
         return $true
     } catch {
         $ErrorLog = Get-Content (Join-Path $DestFolder "go_run_error.log") -Raw -ErrorAction SilentlyContinue
-        Log "Failed to run Go script: $_. Error: $ErrorLog"
+        $OutputLog = Get-Content (Join-Path $DestFolder "go_run_output.log") -Raw -ErrorAction SilentlyContinue
+        Log "Failed to run Go script: $_. Error: $ErrorLog Output: $OutputLog"
         return $false
     }
 }
@@ -233,14 +242,14 @@ function Install-GoDependencies($GoFile) {
             Remove-Item $GoSum -Force -ErrorAction SilentlyContinue
         }
         Log "Initializing Go module"
-        $Proc = Start-Process -FilePath "go" -ArgumentList "mod", "init", "monitoring" -WorkingDirectory $DestFolder -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $DestFolder "go_mod_error.log") -ErrorAction Stop
+        $Proc = Start-Process -FilePath "go" -ArgumentList "mod", "init", "monitoring" -WorkingDirectory $DestFolder -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $DestFolder "go_mod_error.log") -RedirectStandardOutput (Join-Path $DestFolder "go_mod_output.log") -ErrorAction Stop
         if ($Proc.ExitCode -ne 0) {
             $ErrorLog = Get-Content (Join-Path $DestFolder "go_mod_error.log") -Raw -ErrorAction SilentlyContinue
             Log "Failed to initialize Go module: exit code $($Proc.ExitCode). Error: $ErrorLog"
             return $false
         }
         Log "Fetching dependencies"
-        $Proc = Start-Process -FilePath "go" -ArgumentList "get", "-v", "github.com/kbinani/screenshot", "github.com/go-telegram-bot-api/telegram-bot-api/v5" -WorkingDirectory $DestFolder -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $DestFolder "go_get_error.log") -ErrorAction Stop
+        $Proc = Start-Process -FilePath "go" -ArgumentList "get", "-v", "github.com/kbinani/screenshot", "github.com/go-telegram-bot-api/telegram-bot-api/v5" -WorkingDirectory $DestFolder -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $DestFolder "go_get_error.log") -RedirectStandardOutput (Join-Path $DestFolder "go_get_output.log") -ErrorAction Stop
         if ($Proc.ExitCode -ne 0) {
             $ErrorLog = Get-Content (Join-Path $DestFolder "go_get_error.log") -Raw -ErrorAction SilentlyContinue
             Log "Failed to install dependencies: exit code $($Proc.ExitCode). Error: $ErrorLog"
