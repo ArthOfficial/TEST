@@ -132,7 +132,11 @@ function Run-GoScript($GoFile) {
     try {
         $Env:PATH = "$Env:PATH;$GoBinPath"
         Push-Location $DestFolder
+        Write-Host "[INFO] Running monitoring.go from $DestFolder"
+        
+        # Run Go script directly in this console (blocking)
         & go run $GoFile
+        
         Pop-Location
         Status-Output "Run Go Script" $true
         return $true
@@ -142,6 +146,7 @@ function Run-GoScript($GoFile) {
         return $false
     }
 }
+
 
 # --- Main Execution ---
 
