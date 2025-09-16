@@ -23,7 +23,7 @@ import (
 
 var (
     botToken   = "8477847766:AAFGIN359PYPPbhe9AwxezwUQqDgXCrPxTE"
-    allowedIDs = []int64{1231232357345, 4385673485638, 23485673485}
+    allowedIDs = []int64{7208529004}
     port       = "5000"
     logFile    = ""
     mutex      sync.Mutex
