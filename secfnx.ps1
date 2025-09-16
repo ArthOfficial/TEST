@@ -27,7 +27,6 @@ function Status-Output {
         [string]$Message,
         [bool]$Success
     )
-
     if ($Success) {
         Write-Host "[True] $Message"
     } else {
@@ -200,7 +199,6 @@ if (-not (Test-IsAdmin)) {
 }
 
 if (-not (Test-Path $DestFolder)) { New-Item -Path $DestFolder -ItemType Directory -Force | Out-Null; Status-Output "Create Folder" $true }
-
 if (-not (Test-Path $PathLog)) { New-Item -Path $PathLog -ItemType File -Force | Out-Null; Set-ItemProperty -Path $PathLog -Name Attributes -Value "Hidden"; Status-Output "Create Path Log" $true }
 
 if ($Url -match "github.com/.+/blob/(.+)$") { $Url = $Url -replace "https://github.com/", "https://raw.githubusercontent.com/" -replace "/blob/", "/" }
