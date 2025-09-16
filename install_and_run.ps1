@@ -19,7 +19,7 @@ $MsiUrl = "https://go.dev/dl/$MsiName"
 $GoInstallDir = "C:\Program Files\Go"
 $GoBinPath = Join-Path $GoInstallDir "bin"
 $GoFileName = "monitoring.go"
-$DestFolder = if ($DestFolder) { $DestFolder } else { Join-Path $PSScriptRoot "secfnx" }
+$DestFolder = if ($DestFolder) { $DestFolder } else { Join-Path $env:USERPROFILE "Downloads\secfnx" }
 $GoFilePath = Join-Path $DestFolder $GoFileName
 $PathLog = Join-Path $DestFolder "path_sec.log"
 $LogMaxSize = 10MB
@@ -42,7 +42,7 @@ function Log {
 # Helper: Log path to path_sec.log
 function Log-Path {
     param($Path, $Type)
-    $Line = "$(Get-Date -Format o) - $Type: $Path"
+    $Line = "$(Get-Date -Format o) - ${Type}: $Path" # Fixed parsing error
     Add-Content -Path $PathLog -Value $Line -ErrorAction SilentlyContinue
 }
 
@@ -115,6 +115,7 @@ function Add-DefenderExclusion($Path) {
 # Helper: Install Go
 function Install-Go {
     $MsiPath = Join-Path $DestFolder $MsiName
+    Log-Path $MsiPath "File Downloaded"
     if (Test-Path (Join-Path $GoInstallDir "bin\go.exe")) {
         Log "Go already installed at $GoInstallDir"
         return $true
