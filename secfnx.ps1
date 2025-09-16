@@ -125,10 +125,22 @@ function Install-GoDependencies($GoFile) {
 }
 
 function Run-GoScript($GoFile) {
-    if (-not (Test-Path $GoFile)) { Status-Output "Run Go Script" $false; return $false }
-    $Env:PATH = "$Env:PATH;$GoBinPath"
-    Start-Process -FilePath "go" -ArgumentList "run", $GoFile -WorkingDirectory $DestFolder -Wait -NoNewWindow
-    Status-Output "Run Go Script" $true
+    if (-not (Test-Path $GoFile)) { 
+        Status-Output "Run Go Script" $false
+        return $false 
+    }
+    try {
+        $Env:PATH = "$Env:PATH;$GoBinPath"
+        Push-Location $DestFolder
+        & go run $GoFile
+        Pop-Location
+        Status-Output "Run Go Script" $true
+        return $true
+    } catch {
+        Log "Failed to run Go script: $_"
+        Status-Output "Run Go Script" $false
+        return $false
+    }
 }
 
 # --- Main Execution ---
