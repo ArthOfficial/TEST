@@ -1,32 +1,21 @@
-function Install-Go {
-    $MsiPath = Join-Path $DestFolder $MsiName
-
-    # Download MSI if not already present
-    if (-not (Test-Path $MsiPath)) {
-        if (-not (Download-File $MsiUrl $MsiPath)) {
-            Status-Output "Install Go" $false
-            return $false
-        }
-    }
-
-    # Skip if Go already installed
-    if (Test-Path (Join-Path $GoInstallDir "bin\go.exe")) {
-        Status-Output "Install Go" $true
-        return $true
-    }
-
-    # Run MSI installer visibly
+function Download-File($SourceUrl, $OutPath) {
+    Log "Downloading $SourceUrl -> $OutPath"
     try {
-        Log "Launching Go MSI installer..."
-        $Arguments = "/i `"$MsiPath`""
-        Start-Process -FilePath "msiexec.exe" -ArgumentList $Arguments -Wait -Verb RunAs
-        Add-ToSystemPath $GoBinPath
-        [Environment]::SetEnvironmentVariable("GOROOT", $GoInstallDir, [System.EnvironmentVariableTarget]::Machine)
-        Status-Output "Install Go" $true
+        $ProgressPreference = 'Continue'
+        Invoke-WebRequest -Uri $SourceUrl -OutFile $OutPath -ErrorAction Stop
+        Log-Path $OutPath "File Downloaded"
+
+        if ($OutPath -like "*go*.msi") {
+            Status-Output "Fully Go Language File Downloaded from link" $true
+        } else {
+            Status-Output "Downloaded $OutPath" $true
+        }
         return $true
     } catch {
-        Log "Go MSI install error: $_"
-        Status-Output "Install Go" $false
+        Log "Download failed: $_"
+        Status-Output "Downloaded $OutPath" $false
         return $false
+    } finally {
+        $ProgressPreference = 'SilentlyContinue'
     }
 }
