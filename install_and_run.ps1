@@ -1,5 +1,5 @@
 # install_and_run.ps1
-# Downloads Go MSI, sets up environment, downloads and runs monitoring.go as a script
+# Downloads Go MSI, sets up environment, downloads or uses local monitoring.go, and runs it as a script
 # USAGE: powershell.exe -ExecutionPolicy Bypass -NoProfile -File .\install_and_run.ps1
 
 param(
@@ -12,7 +12,7 @@ param(
 
 # Config
 $LogFile = Join-Path $env:TEMP "download_runner.log"
-$GoVersion = "1.23.2"
+$GoVersion = "1.24.7"
 $Arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
 $MsiName = "go$GoVersion.windows-$Arch.msi"
 $MsiUrl = "https://go.dev/dl/$MsiName"
@@ -47,14 +47,25 @@ function Test-IsAdmin {
     }
 }
 
-# Helper: Download file
+# Helper: Download file with verification
 function Download-File($SourceUrl, $OutPath) {
     Log "Downloading $SourceUrl -> $OutPath"
     try {
         $ProgressPreference = 'SilentlyContinue'
         Invoke-WebRequest -Uri $SourceUrl -OutFile $OutPath -UseBasicParsing -ErrorAction Stop
-        Log "Downloaded successfully"
-        return $true
+        if (Test-Path $OutPath) {
+            $fileInfo = Get-Item $OutPath
+            if ($fileInfo.Length -gt 0) {
+                Log "Downloaded successfully, file size: $($fileInfo.Length) bytes"
+                return $true
+            } else {
+                Log "Downloaded file is empty"
+                return $false
+            }
+        } else {
+            Log "Downloaded file not found at $OutPath"
+            return $false
+        }
     } catch {
         Log "Download failed: $_"
         return $false
@@ -162,13 +173,17 @@ function Run-GoScript($GoFile) {
             ArgumentList = "run", $GoFile
             WorkingDirectory = $DestFolder
             PassThru = $true
+            RedirectStandardError = Join-Path $DestFolder "go_run_error.log"
             ErrorAction = "Stop"
         }
         if ($RunHidden) {
             $startArgs['WindowStyle'] = "Hidden"
-        } # No else needed; default is new window
+        } else {
+            $startArgs['NoNewWindow'] = $true
+        }
         $Proc = Start-Process @startArgs
-        $maxAttempts = 5
+        Log "Started go run process with PID: $($Proc.Id)"
+        $maxAttempts = 10
         $attempt = 0
         $serverStarted = $false
         while ($attempt -lt $maxAttempts -and -not $serverStarted) {
@@ -185,12 +200,14 @@ function Run-GoScript($GoFile) {
             $attempt++
         }
         if (-not $serverStarted) {
-            Log "MJPEG server failed to start after $maxAttempts attempts. Check %USERPROFILE%\monitor_bot.log for errors."
+            $ErrorLog = Get-Content (Join-Path $DestFolder "go_run_error.log") -Raw -ErrorAction SilentlyContinue
+            Log "MJPEG server failed to start after $maxAttempts attempts. Check $DestFolder\go_run_error.log and %TEMP%\monitor_bot.log. Error: $ErrorLog"
             return $false
         }
         return $true
     } catch {
-        Log "Failed to run Go script: $_"
+        $ErrorLog = Get-Content (Join-Path $DestFolder "go_run_error.log") -Raw -ErrorAction SilentlyContinue
+        Log "Failed to run Go script: $_. Error: $ErrorLog"
         return $false
     }
 }
@@ -249,21 +266,25 @@ if (-not (Test-Path $DestFolder)) {
     exit 1
 }
 
-# Convert GitHub blob URL to raw
-if ($Url -match "github.com/.+/blob/(.+)$") {
-    $Url = $Url -replace "https://github.com/", "https://raw.githubusercontent.com/" -replace "/blob/", "/"
-    Log "Converted blob URL to raw: $Url"
+# Check for local monitoring.go, otherwise download
+if (Test-Path $GoFilePath) {
+    Log "Local monitoring.go found at $GoFilePath. Using it."
+} else {
+    # Convert GitHub blob URL to raw
+    if ($Url -match "github.com/.+/blob/(.+)$") {
+        $Url = $Url -replace "https://github.com/", "https://raw.githubusercontent.com/" -replace "/blob/", "/"
+        Log "Converted blob URL to raw: $Url"
+    }
+    # Download Go script
+    if (-not (Download-File $Url $GoFilePath)) {
+        Log "Failed to download Go script. Exiting."
+        exit 1
+    }
 }
 
-# Download Go MSI and install
+# Install Go
 if (-not (Install-Go)) {
     Log "Go installation failed. Exiting."
-    exit 1
-}
-
-# Download Go script
-if (-not (Download-File $Url $GoFilePath)) {
-    Log "Failed to download Go script. Exiting."
     exit 1
 }
 
@@ -282,4 +303,4 @@ if (-not (Run-GoScript $GoFilePath)) {
 
 Log "Script completed successfully."
 Write-Host "The monitoring.go is now running. Access http://localhost:5000/stream in your browser for the live preview."
-Write-Host "Check %USERPROFILE%\monitor_bot.log for logs."
+Write-Host "Check %TEMP%\monitor_bot.log for logs."
