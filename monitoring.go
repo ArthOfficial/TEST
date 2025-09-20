@@ -288,7 +288,7 @@ func getLocalIPs() map[string]string {
     return ipMap
 }
 
-// guessNicRoles tries to find wifi and ethernet interface names using common name patterns
+// guessNicRoles tries to find wifi and ethernet interface names using common name patterns heheheheh
 func guessNicRoles(ipMap map[string]string) (wifiName, wifiIP, ethName, ethIP, firstIP string) {
     // default firstIP = any first found
     for name, ip := range ipMap {
