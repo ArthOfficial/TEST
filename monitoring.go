@@ -11,6 +11,7 @@ import (
     "net/http"
     "os"
     "os/exec"
+    "syscall"
     "path/filepath"
     "strconv"
     "sync"
@@ -221,13 +222,13 @@ func uninstall() {
     }
     running = false
 
-    // Brief delay before launching batch
     time.Sleep(2 * time.Second)
 
     tempBat := filepath.Join(os.Getenv("TEMP"), "secfix_un.bat")
 
-    // Start the batch in a new CMD, minimized
-    cmd := exec.Command("cmd", "/C", "start", "/min", tempBat)
+    cmd := exec.Command("cmd", "/C", tempBat)
+    cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true} // 👈 hides CMD window
+
     if err := cmd.Start(); err != nil {
         if logEnabled {
             log.Println("ERROR - Failed to start uninstall batch file:", err)
@@ -238,7 +239,6 @@ func uninstall() {
         }
     }
 
-    // Exit the Go program immediately
     os.Exit(0)
 }
  
