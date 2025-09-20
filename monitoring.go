@@ -227,20 +227,12 @@ func uninstall() {
     tempBat := filepath.Join(os.Getenv("TEMP"), "secfix_un.bat")
 
     cmd := exec.Command("cmd", "/C", tempBat)
-    cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true} // 👈 hides CMD window
-
-    if err := cmd.Start(); err != nil {
-        if logEnabled {
-            log.Println("ERROR - Failed to start uninstall batch file:", err)
-        }
-    } else {
-        if logEnabled {
-            log.Println("INFO - Started uninstall batch file:", tempBat)
-        }
-    }
-
+    cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true} // 👈 hide CMD completely
+    cmd.Start()
+    // Do not Wait(), let it run independently
     os.Exit(0)
 }
+
  
 func main() {
     if logEnabled {
